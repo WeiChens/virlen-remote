@@ -137,6 +137,17 @@ export interface InteractionDTO {
  */
 export type InteractionOutcome = 'allow' | 'deny' | 'shelve' | 'expired'
 
+/**
+ * 流式正文的发送方式（见 `host.event.message.stream`）。
+ *
+ * - `full`：每帧发**整段正文** —— 实现简单，但一条 n 字的消息会传 O(n²) 字节；
+ * - `delta`：一帧只发**新增后缀**（配 `offset` 对齐）—— O(n)。
+ *
+ * **由客户端在 `hello` 里声明偏好**（`HelloParams.streamMode`），服务端不猜：
+ * 没声明就按 `full` 发，否则旧客户端会把一帧增量当成全文渲染（正文错位）。
+ */
+export type StreamMode = 'full' | 'delta'
+
 // ───────────────────────────── 方法表 ─────────────────────────────
 
 export interface SendParams {
@@ -395,14 +406,39 @@ export interface HostEvents {
   'host.event.message.updated': { sessionId: string; message: MessageDTO }
   /**
    * 「正在生成中的那一条消息」的流式同步 —— 与 message.* 分离的独立通道。
-   * 一期只发 `mode='full'`，二期改发 `mode='delta'`，**协议表不变**（§3.6）。
+   *
+   * **一期发 `mode='full'`（每帧整段），二期（2026-09-30，§32）起支持 `mode='delta'`。**
+   * 带宽差一个量级：一条 n 字的消息，整帧发是 O(n²) 字节（每帧都把已有全文再传一遍），
+   * 增量发是 O(n)。真机上「长回复越到后面越卡」的观感就来自前者。
    */
   'host.event.message.stream': {
     sessionId: string
     messageId: string
+    /** 同一 `messageId` 内递增，从 1 开始；换消息重新从 1 算。 */
     seq: number
-    mode: 'full' | 'delta'
+    /**
+     * `full` = `text` 是整段正文（客户端直接替换）；
+     * `delta` = `text` 只是新增后缀（客户端按 `offset` 追加）。
+     *
+     * 什么时候是 `full`（三个时机，客户端不能假定「只有首帧是 full」）：
+     *   1. 该消息的**首帧**（客户端没有任何基准）；
+     *   2. 正文**被改写**（新正文不是旧正文的前缀，如定稿回填 / 修复）；
+     *   3. `final=true` 的收尾帧（定稿全文）。
+     */
+    mode: StreamMode
     text: string
+    /**
+     * 仅 `mode='delta'`：本段 `text` 在整段正文中的**起始偏移**（= 发送前已发出的长度）。
+     *
+     * 为什么必须有它：客户端手上有多少正文**只有它自己知道** —— 中途订阅、
+     * `messages.reset` 后重拉、断线重连都会让它落后于服务端的发送基准。有了偏移，客户端能：
+     *   - 把**完全重复**的段丢掉（`offset + text.length ≤ 本地长度`）；
+     *   - 把**部分重叠**的段按尾巴补上（本地长度 − `offset` 之后的那些字符）；
+     *   - 在**真缺一段**时（`offset > 本地长度`）发现缺口，调 `host.session.message.get` 拉全文对齐。
+     * 没有它就只能靠 seq 连续性猜，而猜错是**静默的正文错位**（比丢帧难查得多）。
+     */
+    offset?: number
+    /** 收尾帧：`text` 为定稿全文（客户端渲染最终版本以随后的 `message.added` 为准）。 */
     final: boolean
   }
   'host.event.session.runtime.changed': { sessionId: string; runtime: RuntimeDTO }

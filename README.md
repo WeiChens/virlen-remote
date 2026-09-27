@@ -25,7 +25,7 @@ import { createMockHostDataSource } from 'virlen-remote/testing'   // 仅测试/
 
 | 分层 | 内容 |
 |---|---|
-| `protocol/` | 帧编解码与分片重组、RPC（`Endpoint` / 幂等 / 超时 / 重放）、错误码、能力协商、方法表与 DTO、设备身份与授权凭证、配对载荷 |
+| `protocol/` | 帧编解码与分片重组、RPC（`Endpoint` / 幂等 / 超时 / 重放）、错误码、能力协商、方法表与 DTO、设备身份与授权凭证、配对载荷、流式下行（整帧 / 增量） |
 | `transport/` | `Transport` 抽象 + 三种实现（`RtcTransport` / `MemoryTransport` / `BroadcastTransport`）、`SseSignalingClient`（信令）、ICE 配置解析 |
 | `testing/`（子路径） | `createMockHostDataSource()`：可直接挂到 `registerHostHandlers` 的 mock 宿主，供两端联调与单测使用 |
 

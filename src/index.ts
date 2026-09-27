@@ -86,6 +86,7 @@ export type {
   RuntimeDTO,
   InteractionDTO,
   InteractionOutcome,
+  StreamMode,
   ApprovalTier,
   SendParams,
   MsgPageParams,

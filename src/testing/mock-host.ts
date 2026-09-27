@@ -2,8 +2,13 @@
  * Mock 宿主数据源 —— 供「浏览器 harness」与单测使用。
  *
  * 行为：`send` 立即回投递确认（`messageId`），随后**异步**推送
- * `message.added`（用户消息）→ `runtime.changed`（working）→ 多次 `message.stream`（full 模式）
+ * `message.added`（用户消息）→ `runtime.changed`（working）→ 多次 `message.stream`
  * → `message.added`（AI 完整消息）+ `runtime.changed`（空闲）。
+ *
+ * 流式帧的形状**由客户端在 `hello` 里声明**（`streamMode`，默认 `full`）：`delta` 时只发新增后缀
+ * （带 `offset`），规则与真实电脑侧（`store-bridge.ts` 的 `pushStream`）**逐条对齐**：
+ * 消息首帧 / 正文被改写 / `final` 收尾帧都发**整段**，只有「新正文以已发出内容为前缀」时才发增量。
+ * 两边不一致的后果很具体：mock 宽松 = 用例对着假行为发绿灯（§24 的教训）。
  *
  * 这正是 §3.3「RPC 只做投递确认、过程走事件」的可运行样例。
  *
@@ -19,7 +24,7 @@ import { BridgeError } from '../protocol/errors'
 import { answerActionError, normalizeChoiceAnswer } from '../protocol/answer'
 import { COMPRESS_MIN_RATIO, DEFAULT_CONTEXT_WINDOW_TOKENS } from '../protocol/api'
 import type { HostDataSource, HostEmit } from '../protocol/host'
-import type { HostEvents } from '../protocol/api'
+import type { HostEvents, StreamMode } from '../protocol/api'
 import type {
   AnswerParams,
   AnswerResult,
@@ -215,8 +220,16 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
   let counter = 0
   const nextId = (prefix: string) => `${prefix}-${++counter}-${Date.now().toString(36)}`
 
-  /** 待应答交互（模拟电脑侧的交互注册表）。 */
+  /**
+   * 待应答交互（模拟电脑侧的交互注册表）。
+   */
   const interactions = new Map<string, InteractionDTO>()
+
+  /**
+   * 手机在 `hello` 里声明的流式偏好（§32）。默认 `full` —— 不声明就按整帧发，
+   * 与真实电脑侧同一条规则（旧客户端收到增量帧会把一帧当全文，正文就错位了）。
+   */
+  let peerStreamMode: StreamMode = 'full'
 
   /** 被「暂存」而暂停的会话（模拟电脑侧的 paused 运行态，供 resume 演示 / 测试）。 */
   const pausedSessions = new Set<string>()
@@ -224,15 +237,42 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
   function emitList(): void {
     emit?.('host.event.session.list.changed', { sessions: sessions.map((s) => ({ ...s })) })
   }
+
+  /**
+   * 发一帧流式正文（按客户端的 `streamMode` 声明决定整帧还是增量）。
+   *
+   * `sent` = 上一步**已发出**的正文；首帧传 `''` → 必然走 `full`（客户端还没有基准）。
+   * 与真实电脑侧一样：写改（非前缀增长）时回落整帧，而不是硬发一个错的增量。
+   */
+  function emitStreamFrame(
+    sessionId: string,
+    messageId: string,
+    seq: number,
+    text: string,
+    sent: string,
+  ): void {
+    const delta = peerStreamMode === 'delta' && sent !== '' && text.startsWith(sent)
+    emitFor(sessionId, 'host.event.message.stream', {
+      sessionId,
+      messageId,
+      seq,
+      mode: delta ? 'delta' : 'full',
+      text: delta ? text.slice(sent.length) : text,
+      ...(delta ? { offset: sent.length } : {}),
+      final: false,
+    })
+  }
+
   async function streamReply(sessionId: string, list: MessageDTO[]): Promise<void> {
     const messageId = nextId('a')
     let text = ''
-    // 模拟生成过程中的积压：内容真实增长 → 流式帧逐次变长（与真实电脑侧 mode='full' 同形）
+    // 模拟生成过程中的积压：内容真实增长 → 流式帧逐次变长（与真实电脑侧同规则）
     list.push({ id: messageId, role: 'assistant', text: '', createdAt: Date.now() })
     for (let i = 0; i < streamSteps; i++) {
       await delay(streamDelayMs)
+      const sent = text
       text += `这是模拟流式的第 ${i + 1} 段。`
-      emitFor(sessionId, 'host.event.message.stream', { sessionId, messageId, seq: i, mode: 'full', text, final: false })
+      emitStreamFrame(sessionId, messageId, i + 1, text, sent)
     }
     await delay(streamDelayMs)
     const finalMessage: MessageDTO = {
@@ -245,7 +285,15 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
     const idx = list.findIndex((m) => m.id === messageId)
     if (idx >= 0) list[idx] = finalMessage
     else list.push(finalMessage)
-    emitFor(sessionId, 'host.event.message.stream', { sessionId, messageId, seq: streamSteps, mode: 'full', text, final: true })
+    // 收尾帧同样是**整段**（定稿全文可能被回填/修复改写，增量已经不可靠）
+    emitFor(sessionId, 'host.event.message.stream', {
+      sessionId,
+      messageId,
+      seq: streamSteps + 1,
+      mode: 'full',
+      text,
+      final: true,
+    })
     emitFor(sessionId, 'host.event.message.added', { sessionId, message: finalMessage })
     emitFor(sessionId, 'host.event.session.runtime.changed', { sessionId, runtime: { working: false } })
     // 生成一轮 → 上下文占用增长（手机端可看到实时变化）
@@ -299,6 +347,8 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
      */
     async hello(params: HelloParams): Promise<HelloResult> {
       const token = params.token
+      // §32：记下手机声明的流式偏好（后续 `message.stream` 按它决定整帧/增量）
+      peerStreamMode = params.streamMode === 'delta' ? 'delta' : 'full'
       if (!token) {
         throw new BridgeError('E_DENIED', '缺少配对令牌', { data: { reason: 'invalid' } })
       }

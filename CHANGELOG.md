@@ -21,6 +21,9 @@
   `MemoryTransport` / `createMemoryPair`（测试）、`BroadcastTransport`（同源跨 tab 联调）；
   `SseSignalingClient`（角色化加入、顶号通知、`requireHostOnline`）、
   `fetchRoomStatus` / `fetchHostOnlineMap`（批量在线查询，失败返回空而不抛错）。
+- **流式下行**：`host.event.message.stream` 支持 `mode: 'full' | 'delta'` —— 客户端在 `hello` 里
+  声明 `streamMode: 'delta'` 后只发新增后缀（带 `offset` 供重基准与缺口对齐）：
+  一条 n 字回复的下行带宽从 O(n²) 降到 O(n)；未声明的客户端继续收整帧。
 - **ICE 配置**：`resolveIceServers` / `fetchIceServers` / `sanitizeIceServers` / `parseIceText` /
   `readCustomIceText` / `writeCustomIceText` —— 客户端**不含任何 TURN 凭证**，
   默认值由服务端 `GET <信令基址>/ice` 下发，本地缓存 + 多级降级。

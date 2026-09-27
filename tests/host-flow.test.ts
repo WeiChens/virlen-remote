@@ -33,7 +33,7 @@ describe('host 胶水 + mock 宿主（端到端，不依赖 WebRTC）', () => {
     const caller = createCaller<HostApi>(clientEp)
 
     const added: Array<{ sessionId: string; role: string }> = []
-    const streams: Array<{ messageId: string; seq: number; final: boolean }> = []
+    const streams: Array<{ messageId: string; seq: number; final: boolean; mode: string }> = []
     const runtimes: Array<{ working: boolean }> = []
     clientEp.subscribe('host.event.message.added', (p) => {
       const e = p as HostEvents['host.event.message.added']
@@ -41,7 +41,7 @@ describe('host 胶水 + mock 宿主（端到端，不依赖 WebRTC）', () => {
     })
     clientEp.subscribe('host.event.message.stream', (p) => {
       const e = p as HostEvents['host.event.message.stream']
-      streams.push({ messageId: e.messageId, seq: e.seq, final: e.final })
+      streams.push({ messageId: e.messageId, seq: e.seq, final: e.final, mode: e.mode })
     })
     clientEp.subscribe('host.event.session.runtime.changed', (p) => {
       const e = p as HostEvents['host.event.session.runtime.changed']
@@ -72,6 +72,8 @@ describe('host 胶水 + mock 宿主（端到端，不依赖 WebRTC）', () => {
     // 过程靠事件推
     await waitFor(() => added.some((m) => m.role === 'assistant'))
     expect(streams.some((s) => s.final)).toBe(true)
+    // 未声明 `streamMode` → 一律整帧（旧客户端收到增量帧会把一帧当成全文）
+    expect(streams.every((s) => s.mode === 'full')).toBe(true)
     expect(runtimes.some((r) => r.working === false)).toBe(true)
 
     reg.dispose()
@@ -130,8 +132,62 @@ describe('host 胶水 + mock 宿主（端到端，不依赖 WebRTC）', () => {
     b.close()
   })
 
-  it('令牌过期 → E_DENIED（登录页的「被拒绝」态）', async () => {
-    const [a, b] = createBroadcastPair(uniqueName('flow'))
+  /**
+   * §32：增量流式 —— 客户端在 `hello` 里声明 `streamMode:'delta'` 后，
+   * 只发新增后缀（带 `offset`）。规则与真实电脑侧（`store-bridge` 的 `pushStream`）逐条对齐。
+   *
+   * 这里守的是一条恒等式：**增量帧拼起来必须等于收尾帧的正文**。
+   * 它一旦不成立，真机上的表现就是「手机端正文缺字 / 错位」——比丢帧难查得多。
+   */
+  it('流式（§32）：声明 delta → 只收增量帧（offset 递增），拼起来等于定稿正文', async () => {
+    const [a, b] = createBroadcastPair(uniqueName('delta'))
+    const hostEp = new Endpoint({ transport: a })
+    const clientEp = new Endpoint({ transport: b })
+    const source = createMockHostDataSource({ streamSteps: 3, streamDelayMs: 2 })
+    const reg = registerHostHandlers(hostEp, source)
+    source.bind(reg.emit)
+    const caller = createCaller<HostApi>(clientEp)
+
+    const frames: Array<HostEvents['host.event.message.stream']> = []
+    clientEp.subscribe('host.event.message.stream', (p) =>
+      frames.push(p as HostEvents['host.event.message.stream']),
+    )
+
+    await caller.call('host.hello', {
+      protocolVersion: 1,
+      client: { platform: 'test', appVersion: '0' },
+      capabilities: ['session.list', 'session.send'],
+      token: 'demo-token',
+      streamMode: 'delta',
+    })
+    await caller.call('host.session.subscribe', { sessionId: 'demo-1' })
+    await caller.call('host.session.send', { sessionId: 'demo-1', text: '增量' })
+    await waitFor(() => frames.some((f) => f.final))
+
+    // 首帧整段（客户端没有任何基准）、中间全是增量、收尾帧整段
+    expect(frames[0].mode).toBe('full')
+    expect(frames[frames.length - 1].mode).toBe('full')
+    const middles = frames.slice(1, -1)
+    expect(middles.length).toBeGreaterThan(0)
+    expect(middles.every((f) => f.mode === 'delta')).toBe(true)
+    expect(middles.every((f) => f.offset != null)).toBe(true)
+
+    // 按客户端的合并规则拼一遍（与 `virlen-mobile` 的 `applyStreamFrame` 同一套判定）
+    let text = frames[0].text
+    for (const f of middles) {
+      expect(f.offset).toBe(text.length)
+      text += f.text
+    }
+    expect(text).toBe(frames[frames.length - 1].text)
+
+    reg.dispose()
+    hostEp.dispose()
+    clientEp.dispose()
+    a.close()
+    b.close()
+  })
+
+  it('令牌过期 → E_DENIED（登录页的「被拒绝」态）', async () => {    const [a, b] = createBroadcastPair(uniqueName('flow'))
     const hostEp = new Endpoint({ transport: a })
     const clientEp = new Endpoint({ transport: b })
     const source = createMockHostDataSource()

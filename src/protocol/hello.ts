@@ -9,6 +9,7 @@
  * 兼容性靠 **`E_UNSUPPORTED` 错误**而不是版本号 if-else —— 老端调新方法时明确报错，UI 隐藏该功能。
  */
 import { BridgeError } from './errors'
+import type { StreamMode } from './api'
 import type { GrantRecord } from './identity'
 
 export interface ClientInfo {
@@ -37,6 +38,18 @@ export interface HelloParams {
   mobileKey?: string
   /** 手机显示名（电脑端列表里显示；缺省由电脑端给「Virlen 手机」）。 */
   mobileName?: string
+  /**
+   * 流式正文的接收偏好（§32，可选）。
+   *
+   * - 不传 / `'full'`：每帧发整段正文（旧行为，带宽 O(n²)）；
+   * - `'delta'`：只发新增后缀（带宽 O(n)）—— 客户端必须能按 `offset` 重基准。
+   *
+   * 为何用参数而不是能力标记：`capabilities` 是「我会什么」的集合，
+   * 而这里要的是「我这次要什么」—— 且 `stream.delta` 这个能力名在 M3 就被两端写进能力表
+   * 却始终没实现，已部署的旧客户端会「声明了但不会处理」。用一个**明确的一次性声明**
+   * 才能同时满足：老客户端不发它（继续收整帧）、新客户端发了才收到增量。
+   */
+  streamMode?: StreamMode
 }
 
 /** 应答方（电脑）hello 结果。 */
