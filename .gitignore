@@ -1,0 +1,16 @@
+# 依赖与缓存
+node_modules/
+
+# 构建产物：发布时由 `pnpm build` 现场生成（`files` 白名单见 package.json）
+dist/
+
+# 本地打包产物（`npm pack`）
+*.tgz
+
+# 编辑器 / 系统
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.log
+*.tsbuildinfo

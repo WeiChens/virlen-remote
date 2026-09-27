@@ -1,0 +1,69 @@
+{
+  "name": "virlen-remote",
+  "version": "0.1.0",
+  "description": "Virlen 手机控制 · 协议栈共享包 —— 帧 / RPC / 错误 / 能力协商 / 设备身份与授权凭证 / 配对载荷 / ICE 解析 / Transport（WebRTC / 内存 / Broadcast）",
+  "license": "MIT",
+  "author": "WeiChens",
+  "keywords": [
+    "virlen",
+    "webrtc",
+    "rtc",
+    "p2p",
+    "datachannel",
+    "signaling",
+    "sse",
+    "rpc",
+    "typescript",
+    "browser"
+  ],
+  "homepage": "https://github.com/WeiChens/virlen-remote#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WeiChens/virlen-remote.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WeiChens/virlen-remote/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pack:check": "npm pack --dry-run",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
+  },
+  "devDependencies": {
+    "typescript": "~7.0.2",
+    "vitest": "^4.1.9"
+  }
+}

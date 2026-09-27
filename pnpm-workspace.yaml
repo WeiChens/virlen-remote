@@ -1,0 +1,6 @@
+# 本包是**独立项目**（不依赖外层 pnpm 工作区）：`pnpm install && pnpm build && npm publish` 三步即可发版。
+#
+# pnpm 11 起构建脚本白名单（allowBuilds）写在这里 —— 少了它，vitest 依赖的 esbuild
+# 安装时会跳过构建脚本，`pnpm test` 直接跑不起来。
+allowBuilds:
+  esbuild: true
