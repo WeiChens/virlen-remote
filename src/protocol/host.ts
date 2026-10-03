@@ -12,12 +12,14 @@
  */
 import type { Endpoint } from './endpoint'
 import type {
+  AgentOptionDTO,
   AnswerParams,
   AnswerResult,
   CompressParams,
   ContextInfoDTO,
   ContextParams,
   CreateSessionParams,
+  DeleteMessageParams,
   DeleteSessionParams,
   HostEvents,
   InteractionDTO,
@@ -53,6 +55,19 @@ export interface HostDataSource {
   setPinned(params: PinSessionParams): { ok: true } | Promise<{ ok: true }>
   /** ⚠️ 不可逆；实现侧必须校验 `confirm === true`（不得依赖手机 UI）。 */
   deleteSession(params: DeleteSessionParams): { ok: true } | Promise<{ ok: true }>
+  /**
+   * 删除单条消息及其之后的全部消息（截断）。
+   *
+   * ⚠️ 实现侧必须自己把三道闸都做上（不得依赖手机 UI）：
+   * 1. `confirm === true`（缺则 `E_CONFIRM_REQUIRED`）；
+   * 2. 会话**正在回复**时拒（`E_BUSY`）—— 删断正在跑的 run 会留下悬空工具调用；
+   * 3. 目标是 `role:'tool'` 的消息时拒（`E_BAD_REQUEST`）—— 工具结果与发起它的
+   *    assistant 消息是一体两面，单独删掉只会留下悬空调用。
+   *
+   * 结果不在应答里回传：实现侧负责推 `host.event.session.messages.reset`，
+   * 客户端重拉窗口（与压缩同一条一致性策略）。
+   */
+  deleteMessage(params: DeleteMessageParams): { ok: true } | Promise<{ ok: true }>
   /** 可选：覆盖默认 hello 应答。 */
   hello?(params: HelloParams): HelloResult | Promise<HelloResult>
   // ── §22：模型 / 工作目录 / 上下文 ──
@@ -60,6 +75,8 @@ export interface HostDataSource {
   listModels(): ModelProviderDTO[] | Promise<ModelProviderDTO[]>
   /** 切换会话模型；实现侧必须校验「服务已启用且模型存在」。 */
   setModel(params: SetModelParams): { ok: true } | Promise<{ ok: true }>
+  /** 新建会话可选的 Agent 候选集（**只用于新建**，已有会话不可改）。 */
+  listAgents(): AgentOptionDTO[] | Promise<AgentOptionDTO[]>
   /** 新建会话可选的工作目录候选集（**只用于新建**，已有会话不可改）。 */
   listWorkspaces(): WorkspaceOptionDTO[] | Promise<WorkspaceOptionDTO[]>
   /** 上下文占用快照（口径与桌面 token 环一致）。 */
@@ -132,11 +149,13 @@ export function registerHostHandlers(
   on('host.session.rename', async (params) => source.renameSession(params as RenameSessionParams))
   on('host.session.pin', async (params) => source.setPinned(params as PinSessionParams))
   on('host.session.delete', async (params) => source.deleteSession(params as DeleteSessionParams))
+  on('host.session.message.delete', async (params) => source.deleteMessage(params as DeleteMessageParams))
   on('host.interaction.answer', async (params) => source.answer(params as AnswerParams))
   on('host.interaction.list', async () => ({ interactions: await source.listInteractions() }))
-  // ── §22：模型 / 工作目录 / 上下文 ──
+  // ── §22：模型 / Agent / 工作目录 / 上下文 ──
   on('host.model.list', async () => ({ providers: await source.listModels() }))
   on('host.session.setModel', async (params) => source.setModel(params as SetModelParams))
+  on('host.agent.list', async () => ({ agents: await source.listAgents() }))
   on('host.workspace.list', async () => ({ workspaces: await source.listWorkspaces() }))
   on('host.session.context', async (params) => source.getContext(params as ContextParams))
   on('host.session.compress', async (params) => source.compress(params as CompressParams))

@@ -47,8 +47,12 @@ export type { DeviceKind, GrantRecord, CredentialRejectReason, RoomStatus } from
 export {
   PAIRING_PAYLOAD_VERSION,
   PAIRING_TICKET_TTL_MS,
+  PAIRING_OBFUSCATION_PREFIX,
+  PAIRING_URL_BASE,
+  PAIRING_URL_PARAM,
   buildPairingPayload,
   encodePairingPayload,
+  buildPairingUrl,
   parsePairingPayload,
   roomOfPayload,
 } from './protocol/pairing'
@@ -58,6 +62,23 @@ export { normalizeChoiceAnswer, answerActionError, CHOICE_JOINER } from './proto
 export type { ChoiceAnswer } from './protocol/answer'
 
 export { negotiate, intersectCapabilities } from './protocol/hello'
+
+// ── 消息级操作（引用 / 删除）的共用契约：能力名 + 引用快照体 ──
+export { MESSAGE_QUOTE_CAPABILITY, MESSAGE_DELETE_CAPABILITY } from './protocol/message-actions'
+export type { MessageQuote } from './protocol/message-actions'
+
+// ── Agent 相关能力名（新建会话时选定 Agent 的授权口径）──
+export { SESSION_AGENT_CAPABILITY } from './protocol/agents'
+
+// ── 工具入参的两种呈现（折叠态一行摘要 / 展开态完整入参）的唯一格式化口径 ──
+export {
+  summarizeToolArgs,
+  formatToolArgs,
+  elideMiddle,
+  TOOL_ARGS_MAX,
+  TOOL_DETAIL_MAX,
+} from './protocol/tool-args'
+export type { ToolArgsSummaryOptions, ToolArgsFormatOptions } from './protocol/tool-args'
 
 export { Endpoint } from './protocol/endpoint'
 export type {
@@ -99,6 +120,8 @@ export type {
   RenameSessionParams,
   PinSessionParams,
   DeleteSessionParams,
+  DeleteMessageParams,
+  AgentOptionDTO,
   ModelProviderDTO,
   WorkspaceOptionDTO,
   ContextInfoDTO,
@@ -126,6 +149,26 @@ export type {
 } from './transport/signaling'
 export { RtcTransport } from './transport/rtc'
 export type { RtcTransportOptions } from './transport/rtc'
+
+// ── RTC 链路类型判定（直连 / 中继，两端同一份口径）──
+export {
+  LINK_KIND_POLL_MS,
+  classifyLinkKind,
+  probeLinkKind,
+  pickCandidatePair,
+  findCandidate,
+  LinkKindWatcher,
+} from './transport/link-kind'
+export type {
+  LinkKind,
+  LinkStatsEntry,
+  StatsReportLike,
+  StatsProvider,
+} from './transport/link-kind'
+
+// ── 传输档位（链路类型 → 发不发详细内容，两端同一份口径）──
+export { MESSAGE_DETAIL_CAPABILITY, transferTierOf } from './transport/transfer-tier'
+export type { TransferTier } from './transport/transfer-tier'
 
 // ── ICE 配置（M7，§31）：客户端不再内置任何 TURN 凭证 ──
 export {

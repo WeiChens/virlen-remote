@@ -106,16 +106,25 @@ const hello = await caller.call('host.hello', {
 ```ts
 import {
   buildPairingPayload,
-  encodePairingPayload,
+  buildPairingUrl,
   parsePairingPayload,
   roomOfPayload,
 } from 'virlen-remote'
 
 const payload = buildPairingPayload({ host: deviceKey, name: '我的电脑', ticket, signal: signalUrl })
-const qrText = encodePairingPayload(payload)     // 画进二维码
-const back = parsePairingPayload(qrText)         // 手机端解析（无法识别时返回 null）
+const qrText = buildPairingUrl(payload)          // 画进二维码：'https://virlen.cn/mobile?t=vrp1:xxxx'
+const back = parsePairingPayload(qrText)         // 手机端解析（URL / 混淆串 / 旧明文 JSON 都吃；认不出返回 null）
 if (back) await connect(roomOfPayload(back), back.host, back.ticket)
 ```
+
+> **配对链接**：二维码内容 = `https://virlen.cn/mobile?t=<配对数据>`，于是**系统相机 / 微信 / 任意浏览器**
+> 扫码就能直接打开手机端并自动配对。手机端从 `?t=` 取回数据后同样交给 `parsePairingPayload`。
+> 地址常量见 `PAIRING_URL_BASE`（自建 / 换域名给 `buildPairingUrl` 传第二个参数覆盖）。
+>
+> **关于混淆**：配对数据是 `vrp1:` + `Base64URL(JSON ⊕ 固定盐)`，只是让二维码文字 /
+> 界面上的排查文本**不是一眼可读**，**不是加密** —— 固定盐在源码里，拿到源码即可解；它也
+> 挡不住有人对着屏幕拍照。真正的安全边界是「一次性 ticket + 电脑端确认弹窗 + 授权凭证」。
+> `parsePairingPayload` **同时接受** URL、混淆串与旧版明文 JSON（向后兼容）。前缀常量见 `PAIRING_OBFUSCATION_PREFIX`。
 
 ## ICE / TURN 配置
 

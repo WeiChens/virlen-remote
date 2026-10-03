@@ -1,7 +1,7 @@
 {
   "name": "virlen-remote",
-  "version": "0.1.0",
-  "description": "Virlen 手机控制 · 协议栈共享包 —— 帧 / RPC / 错误 / 能力协商 / 设备身份与授权凭证 / 配对载荷 / ICE 解析 / Transport（WebRTC / 内存 / Broadcast）",
+  "version": "0.6.0",
+  "description": "Virlen 手机控制 · 协议栈共享包 —— 帧 / RPC / 错误 / 能力协商 / 设备身份与授权凭证 / 配对载荷 / ICE 解析 / 链路类型与传输档位 / 消息级操作（引用与删除） / Agent 选择 / Transport（WebRTC / 内存 / Broadcast）",
   "license": "MIT",
   "author": "WeiChens",
   "keywords": [

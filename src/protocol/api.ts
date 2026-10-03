@@ -11,6 +11,7 @@
  * 具体从电脑侧 store 投影到 DTO 的适配在 M2 的 `dto.ts` 落地。
  */
 import type { CallContext, Endpoint } from './endpoint'
+import type { MessageQuote } from './message-actions'
 
 // ───────────────────────────── DTO（白名单投影） ─────────────────────────────
 
@@ -45,9 +46,33 @@ export interface SessionSummaryDTO {
 export interface MessageDTO {
   id: string
   role: 'user' | 'assistant' | 'tool' | 'system'
-  /** 纯文本投影；图片等富内容一期剥离为占位符（§7-⑦）。空串 = 无正文（手机端不渲染空气泡）。 */
+  /**
+   * 纯文本投影；图片等富内容一期剥离为占位符（§7-⑦）。空串 = 无正文（手机端不渲染空气泡）。
+   *
+   * ⚠️ 空串有**两种**来源，靠 `detail` 区分：本来就没有正文，与**正文被传输档位省略**
+   * （中继 / 类型未知时工具输出不下发，见共享包的 `TransferTier`）。把后者当成前者，
+   * 就是给用户写一句不成立的结论。
+   *
+   * ⚠️ **引用块不在本字段里**（见 `quotes`）：引用是结构化下行的，若同时把它展平进
+   * `text`，消费方就会把同一段引文显示两遍（引用条 + 正文里的 `[引用] …`）。
+   *
+   * ⚠️ **工具输出（`role:'tool'`）有长度上限**：超过 `TOOL_DETAIL_MAX`（5000）字符时
+   * 电脑侧会做**中间省略**（`elideMiddle`），并把 `…（中间省略 N 字符）…` 写在正文里 ——
+   * 头尾都是真的，只少了中间那段。所以它**不是**「正文被篡改」，消费方不得据此
+   * 提示「内容不可信」；要判「有没有被砍过」就看那一行标记（长度看不出来）。
+   */
   text: string
   createdAt: number
+  /**
+   * 正文完整性标记（**可选**，只在正文被有意省略时出现）。
+   *
+   * `'omitted'`：`text` 为空是**档位决定**，不是「这次调用没有输出」—— 工具输出确实存在，
+   * 只是这条链路（TURN 中继 / 类型未知）按精简档不下发（§33）。手机端据此显示「输出已省略」。
+   *
+   * ⚠️ 消费方**不要穷举取值**：判「有没有这个字段」，不认识的值一律按「正文不完整」处理 ——
+   * 将来增加别的完整性档（如截断）时，旧消费方仍应给出诚实的提示而不是当成完整正文。
+   */
+  detail?: 'omitted'
   /**
    * 工具名（仅 `role:'tool'`，如 `read_file`）。
    *
@@ -56,6 +81,48 @@ export interface MessageDTO {
    * 手机端**不猜**：拿不到就只显示「工具」。
    */
   toolName?: string
+  /**
+   * 工具**入参摘要**（仅 `role:'tool'`；一行纯文本，如 `src/store/chat.ts`、
+   * `npm run build`、`在 src 中搜索 sessionError`）。
+   *
+   * 为什么需要一个字段：工具气泡只说「调了 read_file」，用户并不知道**看的是哪个文件**；
+   * 桌面端这条信息来自 `toolCalls[].input`（28 个 `getShortText()` 组件各挑各的主参数）。
+   * 手机是第二个屏幕，同样需要「这一步在干什么」。
+   *
+   * ⚠️ **不是原始入参**：`write_file.content` / `edit_file.edits[].old_string` 可能是整篇文章，
+   * 原样下行就是流量事故（§7-⑦）。电脑侧只挑关键入参、格式化并截断
+   * （`summarizeToolArgs`，与演示宿主共用同一份实现）。
+   *
+   * 消费方注意：拿不到（旧电脑端 / 跨页工具调用）时字段缺席 ——
+   * 此时**只显示工具名**，不要猜、也不要用正文反推。
+   */
+  toolArgs?: string
+  /**
+   * 工具**入参详情**（仅 `role:'tool'`；多行，展开工具卡片后才渲染）。
+   *
+   * 为什么与 `toolArgs` 并存：那一行摘要只挑**主参数**（且硬上限 160 字符），真机反馈是
+   * 「入参显示不完整」—— 用户点开卡片想知道「刚才那行没显示完的是什么」。这里是入参本身
+   * （两空格缩进的 JSON，与桌面导出的同一种形态），路径与 `toolArgs` 走**同一个**缩短回调。
+   *
+   * ⚠️ **它比 `toolArgs` 重得多**（`write_file.content` 会原样出现，只是被 `TOOL_DETAIL_MAX`
+   * 兜住），所以纪律也反了一面：`toolArgs` 是「只给摘要、不给原文」，这里是「用户主动点开
+   * 才渲染的现场」。消费方**不得**把它放进折叠态（那会把流量事故从电脑搬到手机屏幕上）。
+   *
+   * 超长时同样是**中间省略**（标记行写在正文里）。字段缺席 = 没有可显示的入参
+   * （旧电脑端 / 跨页工具调用 / 入参为空）→ 展开区不渲染这一块，不要凭空造。
+   */
+  toolArgsFull?: string
+  /**
+   * 本条消息引用了哪些历史消息（快照，**可选**；只有带引用的用户消息才有）。
+   *
+   * 为什么结构化下行而不展平进 `text`：桌面端把它渲染成气泡上方的引用条（`QuoteChip`），
+   * 并可点击跳回原消息 —— 展平成一串文本就再也拆不回来了（`[引用] …` 只是个前缀，
+   * 正文里本来就可能有同样的字样）。
+   *
+   * 消费方注意：`quotes[].text` 是**快照**，可能很长（引用一整段 AI 回答）—— 引用条应**截断显示**，
+   * 发给模型的是完整快照（与桌面一致，不要在协议层擅自裁剪用户要引用的内容）。
+   */
+  quotes?: MessageQuote[]
 }
 
 export interface RuntimeDTO {
@@ -153,6 +220,19 @@ export type StreamMode = 'full' | 'delta'
 export interface SendParams {
   sessionId: string
   text: string
+  /**
+   * 引用若干条历史消息（可选）。
+   *
+   * 电脑端把它组装成 `{type:'quote'}` 内容块（与桌面输入框的引用附件走**同一个**
+   * `buildUserContent`），因此下游（引擎 / 持久化 / 桌面渲染 / 导出）的语义与桌面完全一致：
+   * 模型看到的是结构化的引用块，桌面端显示引用条并可点击跳回原消息，引文是**快照**
+   * （原消息被删 / 被压缩也不影响）。
+   *
+   * ⚠️ **只在电脑端声明 `MESSAGE_QUOTE_CAPABILITY` 时才能发**：旧电脑端不认这个参数，
+   * RPC 会「成功」而引文被静默丢掉（用户会以为引用了，AI 却当没看见）。
+   * 另外这是 `session.send` 的一个参数，**不是新权限** —— 越权防线仍是 `session.send`。
+   */
+  quotes?: MessageQuote[]
 }
 
 export interface MsgPageParams {
@@ -253,6 +333,25 @@ export interface WorkspaceOptionDTO {
 }
 
 /**
+ * 新建会话可选的 Agent（`host.agent.list`）。
+ *
+ * 白名单投影：只给 `id` / `name` / 默认模型 / 默认工作目录 —— **不含** `systemPrompt`
+ * （可达数十 KB）、`allowTools` / `skills` / `params`（本地配置，§7-⑥）。
+ *
+ * 默认值**只用于展示**（让手机端把「选它会发生什么」说清楚，并在切换 Agent 时联动显示）；
+ * 真正的会话组装仍在电脑侧 `createSession` 里做 —— 手机端传不传模型 / 目录都不影响结果。
+ */
+export interface AgentOptionDTO {
+  id: string
+  /** Agent 显示名（电脑侧已解析，手机不查表）。 */
+  name: string
+  /** Agent 的默认模型；未配置则缺省（不显示）。 */
+  defaultModel?: { providerConfigId: string; modelId: string }
+  /** Agent 的默认工作目录（归一化绝对路径）；未配置则缺省。 */
+  defaultWorkspace?: string
+}
+
+/**
  * 上下文占用（`host.session.context` / `host.event.session.context.changed`）。
  *
  * 口径与桌面 token 环**完全一致**（`domain/usage/context-occupancy.ts`，单一真源）：
@@ -310,9 +409,19 @@ export interface CreateSessionParams {
    * 不传 = 沿用 Agent 的 `defaultWorkspace`（电脑侧行为）。
    */
   workspace?: string
-  /** 模型服务与模型 id；不传 = 沿用默认 Agent 的默认模型。 */
+  /**
+   * 模型服务与模型 id；不传 = 沿用**所选 Agent** 的默认模型（未选 Agent 即默认 Agent 的）。
+   */
   providerConfigId?: string
   modelId?: string
+  /**
+   * 归属 Agent（**必须来自 `host.agent.list`**；电脑侧独立校验，未知 id 即 `E_BAD_REQUEST`）。
+   *
+   * 不传 = 电脑侧的默认 Agent（与桌面「直接新建」的同构行为）。归属 Agent 决定
+   * systemPrompt / 工具白名单 / skills / 默认参数，因此电脑侧接受这条字段受
+   * `session.agent` 权限约束（见 `SESSION_AGENT_CAPABILITY`）。
+   */
+  agentId?: string
 }
 
 export interface RenameSessionParams {
@@ -330,6 +439,29 @@ export interface DeleteSessionParams {
   /**
    * 必须为 `true`。会话删除不可逆（消息级联删除）—— §16.3-3 要求手机端二次确认，
    * 电脑侧独立校验，缺则 `E_CONFIRM_REQUIRED`。
+   */
+  confirm: true
+}
+
+/**
+ * 删除单条消息**及其之后的全部消息**（截断）—— 与桌面右键菜单的「删除」同一条路径
+ * （`deleteSessionMessage`），**不是**「把这一条从中间抽走」。
+ *
+ * 为什么是截断而不是单删：一条消息的历史是**因果链** —— 抽走中间一条用户提问，
+ * 后面 AI 的回答就失去了提问；抽走一条带 `tool_calls` 的 assistant 消息，后面的
+ * 工具结果就成了孤儿（引擎侧要额外做悬空修补）。桌面端已经用「本条及后续」表达了这个
+ * 事实，手机端**不得**另立一套更「温和」的语义 —— 那只会让两个入口对同一次操作给出
+ * 不同的后果（用户删了中间一条，电脑上的历史却不一样）。
+ *
+ * 角色限制：`role:'tool'` 的消息**不可删**（工具结果与发起它的 assistant 消息是一体两面，
+ * 单独删掉只会留下悬空调用）—— 电脑侧拒绝，手机端也不提供入口。
+ */
+export interface DeleteMessageParams {
+  sessionId: string
+  messageId: string
+  /**
+   * 必须为 `true`。截断不可逆 —— §16.3-3 要求手机端二次确认，电脑侧独立校验，
+   * 缺则 `E_CONFIRM_REQUIRED`（手机端 UI 的确认弹窗不算数）。
    */
   confirm: true
 }
@@ -356,6 +488,17 @@ export interface HostApi {
   'host.session.pin': { params: PinSessionParams; result: { ok: true } }
   /** ⚠️ 不可逆：必须带 `confirm: true`（缺则 `E_CONFIRM_REQUIRED`）。 */
   'host.session.delete': { params: DeleteSessionParams; result: { ok: true } }
+  /**
+   * 删除单条消息及其之后的全部消息（截断，不可逆）。
+   *
+   * 与 `host.session.message.get` 同属「消息级」方法。结果**不**在本应答里回传快照：
+   * 电脑侧会推 `host.event.session.messages.reset`，手机端据此重拉窗口（§3.5 的同一策略——
+   * 不发明增量协议，让「重拉快照」这个天然幂等的动作承担一致性）。
+   *
+   * 电脑侧还会拦两种情况：会话正在回复（`E_BUSY`，与 `send` / `compress` 同一条并发纪律）、
+   * 目标是 `role:'tool'` 的消息（`E_BAD_REQUEST`）。
+   */
+  'host.session.message.delete': { params: DeleteMessageParams; result: { ok: true } }
   'host.interaction.answer': { params: AnswerParams; result: AnswerResult }
   /**
    * 当前待应答交互（**拉取式**，M4）。
@@ -374,6 +517,14 @@ export interface HostApi {
    * 与桌面同构：不刷新 `updatedAt`（会话时间只由用户发消息刷新），下一轮生效。
    */
   'host.session.setModel': { params: SetModelParams; result: { ok: true } }
+  /**
+   * 新建会话可选的 Agent 候选集（手机端 Agent 选择器）。
+   *
+   * 与 `host.model.list` / `host.workspace.list` 同族，同样**只用于新建会话**：
+   * 已有会话的 Agent 不可改 —— 换了 Agent 就是换 systemPrompt / 工具白名单 / skills，
+   * 历史对话会前后错配（与工作目录不可改同一条理由，§22.3）。
+   */
+  'host.agent.list': { params: Record<string, never>; result: { agents: AgentOptionDTO[] } }
   /**
    * 新建会话可选的工作目录候选集。
    *
@@ -464,7 +615,27 @@ export interface HostEvents {
    * 为什么必需：此前删除的消息只是从电脑侧快照里消失（不发事件），手机端会一直显示幽灵消息。
    */
   'host.event.session.messages.reset': { sessionId: string }
-  'host.event.connection.changed': { path: 'direct' | 'relay'; degraded: boolean }
+  /**
+   * 本机（电脑）视角的链路通讯类型 —— 「这次连接到底是直连还是走了 TURN 中继」。
+   *
+   * 同一事实在本端也成立（手机端同样有一条所选候选对，可自行判定），本事件的用途是让手机
+   * **拿电脑视角交叉校验**：两端口径已收敛到共享包的 `classifyLinkKind`（见 `HostEvents` 之外
+   * 的 `virlen-remote` 导出），若仍不一致，说明有一端的 stats 读取出了问题。
+   *
+   * 只在结论**确定**（`direct` / `relay`）时发送：链路刚建立 / 正在重协商时电脑端算不出结论，
+   * 那属于「没有结论」，**不发事件**（而不是发一个猜测）；`unknown` 不在本事件的取值域内。
+   */
+  'host.event.connection.changed': {
+    path: 'direct' | 'relay'
+    /**
+     * ⚠️ **预留字段，当前不发送**（`virlen-remote@0.1.2` 起转为可选）。
+     *
+     * 语义（若将来启用）：链路虽可用但已**降级**（例如被迫走中继、或质量明显下滑）。
+     * 当前实现只区分 `path`，没有任何独立可观测的「降级」判据，故先留空 —— 与其用一个尚未
+     * 定义的口径误导消费方，不如让它缺席。消费方**不得**用 `path === 'relay'` 反推它。
+     */
+    degraded?: boolean
+  }
 }
 
 export interface MobileEvents {

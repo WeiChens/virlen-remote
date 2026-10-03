@@ -23,9 +23,13 @@
 import { BridgeError } from '../protocol/errors'
 import { answerActionError, normalizeChoiceAnswer } from '../protocol/answer'
 import { COMPRESS_MIN_RATIO, DEFAULT_CONTEXT_WINDOW_TOKENS } from '../protocol/api'
+import { MESSAGE_DELETE_CAPABILITY, MESSAGE_QUOTE_CAPABILITY } from '../protocol/message-actions'
+import { SESSION_AGENT_CAPABILITY } from '../protocol/agents'
+import { summarizeToolArgs, formatToolArgs } from '../protocol/tool-args'
 import type { HostDataSource, HostEmit } from '../protocol/host'
 import type { HostEvents, StreamMode } from '../protocol/api'
 import type {
+  AgentOptionDTO,
   AnswerParams,
   AnswerResult,
   ApprovalTier,
@@ -33,6 +37,7 @@ import type {
   ContextInfoDTO,
   ContextParams,
   CreateSessionParams,
+  DeleteMessageParams,
   DeleteSessionParams,
   InteractionDTO,
   MessageDTO,
@@ -119,6 +124,37 @@ const DEMO_PROVIDERS: ModelProviderDTO[] = [
 /** 演示用工作目录候选集（新建会话只能从这里选）。 */
 const DEMO_WORKSPACES = ['E:/code/virlen-demo', 'E:/code/another-project']
 
+/**
+ * 演示用 Agent 候选集（与上面 `sessions` 里的 `agentId` / `agentName` 一致）。
+ *
+ * 两个 Agent 故意配**不同的默认模型 / 默认目录**：手机端切换 Agent 时能看出联动，
+ * 也能验证「不传模型 / 目录 = 用所选 Agent 的默认值」这条语义。
+ */
+const DEMO_AGENTS: AgentOptionDTO[] = [
+  {
+    id: 'agent-virlen',
+    name: 'Virlen',
+    defaultModel: { providerConfigId: 'p-openai', modelId: 'gpt-4o' },
+    defaultWorkspace: DEMO_WORKSPACES[0],
+  },
+  {
+    id: 'agent-reviewer',
+    name: '代码评审员',
+    defaultModel: { providerConfigId: 'p-anthropic', modelId: 'claude-sonnet-4' },
+    defaultWorkspace: DEMO_WORKSPACES[1],
+  },
+]
+
+/**
+ * 「只引用了消息、没写正文」时电脑侧补的那句话。
+ *
+ * 与桌面输入框的兜底**同一条**（`utils/messageContent.ts::buildUserContent` 的「有引用无文本」分支）：
+ * 不变的话，用例会对着一个与真机不同的正文发绿灯。文案取桌面的中文原文 ——
+ * 桌面切成英文时会是另一句，但 mock 只求**行为同形**，不求与 i18n 逐字同步
+ * （真要与 i18n 一致，那是 virlen-app 侧的跨端用例该盯的事）。
+ */
+const QUOTE_ONLY_TEXT = '请针对引用的消息回复'
+
 export function createMockHostDataSource(options: MockHostOptions = {}): MockHostDataSource {
   const streamSteps = options.streamSteps ?? 3
   const streamDelayMs = options.streamDelayMs ?? 40
@@ -197,6 +233,16 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
         text: 'src/index.ts\nsrc/store.ts\nsrc/ui/pages/Chat.tsx',
         createdAt: Date.now() - 105_000,
         toolName: 'list_files',
+        /*
+         * 入参摘要与真实电脑侧**同源**（`summarizeToolArgs`）：演示宿主不手写一行
+         * 会与真实格式化规则打架的假数据 —— 那种假数据会让联调时看到的现象失去意义。
+         */
+        toolArgs: summarizeToolArgs('list_files', { path: 'src' }),
+        /*
+         * 展开区的完整入参同样**同源**（`formatToolArgs`）：演示宿主手写一段会在形态上
+         * 与真实电脑侧打架（缩进 / 路径缩不缩短），那会让联调时看到的现象失去意义。
+         */
+        toolArgsFull: formatToolArgs({ path: 'src' }),
       },
       {
         id: 'empty-assistant',
@@ -380,6 +426,13 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
           'session.workspace',
           'session.context',
           'session.compress',
+          // Agent 选择：mock 确实按候选集校验 agentId（见 createSession），故如实声明 ——
+          // 不声明的话手机端会隐藏选择器，用例就测不到真实链路
+          SESSION_AGENT_CAPABILITY,
+          // 消息级操作：mock 确实实现了这两项（引用进内容块 / 截断删除），故如实声明 ——
+          // 不声明的话手机端会隐藏入口，用例就测不到真实链路
+          MESSAGE_QUOTE_CAPABILITY,
+          MESSAGE_DELETE_CAPABILITY,
         ],
         paired: true,
         deviceName: 'Virlen 电脑（演示）',
@@ -427,11 +480,15 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
       calls.push('host.session.send')
       const list = messages.get(params.sessionId)
       if (!list) throw new BridgeError('E_NOT_FOUND', `session not found: ${params.sessionId}`)
+      const quotes = params.quotes ?? []
       const userMessage: MessageDTO = {
         id: nextId('u'),
         role: 'user',
-        text: params.text,
+        // 与真实电脑侧的白名单投影同一条规则：引用**不进 `text`**（而是走 `quotes`），
+        // 否则客户端会把它显示两遍（引用条 + 正文里的 `[引用] …`）
+        text: params.text || (quotes.length > 0 ? QUOTE_ONLY_TEXT : ''),
         createdAt: Date.now(),
+        ...(quotes.length > 0 ? { quotes: quotes.map((q) => ({ ...q })) } : {}),
       }
       list.push(userMessage)
       emitFor(params.sessionId, 'host.event.message.added', { sessionId: params.sessionId, message: userMessage })
@@ -559,15 +616,28 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
         }
         workspace = match
       }
-      const model = resolveModel(params.providerConfigId, params.modelId)
+      /**
+       * Agent：**与真实电脑侧同一条防线** —— id 必须来自 `host.agent.list` 的候选集，
+       * 手机不能自造（未知 id 即 `E_BAD_REQUEST`）。不传 = 默认 Agent。
+       */
+      const agent =
+        params.agentId != null ? DEMO_AGENTS.find((a) => a.id === params.agentId) : undefined
+      if (params.agentId != null && !agent) {
+        throw new BridgeError('E_BAD_REQUEST', `Agent 不存在：${params.agentId}`)
+      }
+      // 模型：手机没给就用**所选 Agent** 的默认模型（与真实电脑侧 createSession 同序）
+      const model = resolveModel(
+        params.providerConfigId ?? agent?.defaultModel?.providerConfigId,
+        params.modelId ?? agent?.defaultModel?.modelId,
+      )
       sessions.unshift({
         id,
         title: params.title || '手机新建的会话',
         updatedAt: Date.now(),
         working: false,
-        agentId: 'agent-virlen',
-        agentName: 'Virlen',
-        workspace: workspace ?? DEMO_WORKSPACES[0],
+        agentId: agent?.id ?? 'agent-virlen',
+        agentName: agent?.name ?? 'Virlen',
+        workspace: workspace ?? agent?.defaultWorkspace ?? DEMO_WORKSPACES[0],
         ...model,
       })
       messages.set(id, [])
@@ -605,10 +675,46 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
       emitList()
       return { ok: true as const }
     },
-    // ── §22：模型 / 工作目录 / 上下文 ──
+    /**
+     * 删除单条消息及其之后的全部消息（截断）—— **与真实电脑侧同一条规则**：
+     * confirm 必填 / 回复中拒绝（E_BUSY）/ tool 消息不可删 / 删完推 `messages.reset`。
+     *
+     * ⚠️ mock 偏宽松 = 用例对着假行为发绿灯（§18.6 的教训），故三道闸一道不少。
+     */
+    async deleteMessage(params: DeleteMessageParams) {
+      calls.push('host.session.message.delete')
+      if (params.confirm !== true) {
+        throw new BridgeError('E_CONFIRM_REQUIRED', '删除消息需二次确认（confirm:true）')
+      }
+      const list = messages.get(params.sessionId)
+      if (!list) throw new BridgeError('E_NOT_FOUND', `session not found: ${params.sessionId}`)
+      const session = sessions.find((s) => s.id === params.sessionId)
+      if (session?.working === true) {
+        throw new BridgeError('E_BUSY', '该会话正在回复中，请稍后再试')
+      }
+      const idx = list.findIndex((m) => m.id === params.messageId)
+      if (idx === -1) throw new BridgeError('E_NOT_FOUND', `message not found: ${params.messageId}`)
+      if (list[idx].role === 'tool') {
+        throw new BridgeError('E_BAD_REQUEST', '工具消息不能单独删除')
+      }
+      // 本条及其后全部删除，并推 `messages.reset` 让客户端重拉窗口
+      list.splice(idx)
+      if (session) session.updatedAt = Date.now()
+      emitFor(params.sessionId, 'host.event.session.messages.reset', { sessionId: params.sessionId })
+      bumpContext(params.sessionId, Math.max(0, (contextTokens.get(params.sessionId) ?? 0) - 1_000))
+      return { ok: true as const }
+    },
+    // ── §22：模型 / Agent / 工作目录 / 上下文 ──
     async listModels() {
       calls.push('host.model.list')
       return DEMO_PROVIDERS.map((p) => ({ ...p, models: [...p.models] }))
+    },
+    async listAgents(): Promise<AgentOptionDTO[]> {
+      calls.push('host.agent.list')
+      return DEMO_AGENTS.map((a) => ({
+        ...a,
+        ...(a.defaultModel ? { defaultModel: { ...a.defaultModel } } : {}),
+      }))
     },
     async setModel(params: SetModelParams) {
       calls.push('host.session.setModel')
