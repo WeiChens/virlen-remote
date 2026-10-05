@@ -105,6 +105,7 @@ export type {
   SessionSummaryDTO,
   MessageDTO,
   RuntimeDTO,
+  RunningToolDTO,
   InteractionDTO,
   InteractionOutcome,
   StreamMode,

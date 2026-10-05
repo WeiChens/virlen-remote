@@ -46,6 +46,7 @@ import type {
   MsgPageParams,
   PinSessionParams,
   RenameSessionParams,
+  RunningToolDTO,
   SendParams,
   SessionSummaryDTO,
   SetModelParams,
@@ -113,6 +114,19 @@ export interface MockHostDataSource extends HostDataSource {
    * 期间唯一的事件（其余时间静默）。`progress = null` 表示清空（工具开始执行 / 本轮结束）。
    */
   setToolProgress(sessionId: string, progress: { name: string; chars: number } | null): void
+  /**
+   * 手动推一次「**正在执行中**的工具」（`RuntimeDTO.runningTools`），供手机端 UI 联调 / 单测。
+   *
+   * 与 `setToolProgress` 是一对（先后相接的两个阶段）：参数累积期看 `toolProgress`，
+   * 工具开始执行到结果回来之间看 `runningTools`。传 `null` = **跑完了**（一并把 `working` 收掉，
+   * 真机上工具跑完要么接着下一轮、要么整个 run 结束）；传空数组 = 这次执行中的工具都结束了，
+   * 但会话仍在跑（模型正在接着思考）。
+   *
+   * ⚠️ 真实电脑侧没有这个「手动口」：那些字段是 `store-bridge` 从会话消息（assistant 的
+   * `toolCalls[]` 减去已有结果）**推导**出来的（§27 的姊妹字段），mock 手推是为了让手机端
+   * 在**没有引擎**的情况下也能看到这一帧。
+   */
+  setRunningTools(sessionId: string, tools: RunningToolDTO[] | null): void
 }
 
 /** 演示用模型服务（与 `sessions` 里的 provider 字段一致）。 */
@@ -366,6 +380,23 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
       sessionId,
       // 参数累积期一定是 working（真实链路里两者同源）；progress=null 即清空
       runtime: { working: true, ...(progress ? { toolProgress: progress } : {}) },
+    })
+  }
+
+  /** 推一次「正在执行中的工具」（`RuntimeDTO.runningTools`）—— 同上，受订阅门约束。 */
+  function setRunningTools(sessionId: string, tools: RunningToolDTO[] | null): void {
+    if (tools === null) {
+      // 跑完了：没有执行中的工具，也不再工作（真机上这一步之后要么空闲、要么出新消息）
+      emitFor(sessionId, 'host.event.session.runtime.changed', {
+        sessionId,
+        runtime: { working: false },
+      })
+      return
+    }
+    emitFor(sessionId, 'host.event.session.runtime.changed', {
+      sessionId,
+      // 工具在执行 → 一定是 working；空数组即「都执行完了，但本轮还没结束」
+      runtime: { working: true, ...(tools.length > 0 ? { runningTools: tools } : {}) },
     })
   }
 
@@ -771,6 +802,7 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
     /** 手动推一次占用变化（harness 按钮 / 测试用）。 */
     bumpContext,
     setToolProgress,
+    setRunningTools,
   }
 
   return host

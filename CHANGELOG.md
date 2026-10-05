@@ -3,6 +3,30 @@
 本文件记录对外可见的变更（协议 / 导出面 / 行为）。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.1] - 2026-10-05
+
+### Added
+
+- **执行中的工具**：`RuntimeDTO.runningTools?: RunningToolDTO[]`（`RunningToolDTO = { toolCallId, name, args? }`）。
+  真机反馈：「工具在电脑上有显示（呼吸点卡片），手机上什么都看不到，只有『正在思考』」—— 根因是
+  这段状态**只活在电脑侧的界面推导里**（桌面用「assistant 的 `toolCalls[]` 减去已有结果」得出
+  pending 卡片），而工具消息只在**执行完之后**才作为消息下行；`toolProgress` 又只管**参数累积期**
+  （工具一开始执行就被清掉）。两者中间的那段静默期，手机上没有任何东西可看。
+  语义：已声明、尚无同 `toolCallId` 结果消息的调用；**仅 `working === true` 时可能有值**，
+  字段缺席 = 此刻没有执行中的工具（旧电脑端永远缺席 → 旧手机端忽略即可，两端都向后兼容）。
+  `args` 是一行**摘要**（与 `MessageDTO.toolArgs` 同一格式化口径，`summarizeToolArgs` + 路径缩短），
+  **绝不含参数正文**；里面**没有**百分比 / 实时输出 —— 工具的执行输出仍走结果消息。
+- `RunningToolDTO`：上面那个数组的元素类型（已从包根导出）。
+- 演示宿主新增 `setRunningTools(sessionId, tools | null)`（与 `setToolProgress` 对称），
+  供手机端 UI 联调 / 单测手推这一帧（传 `null` = 跑完了，一并收掉 `working`）。
+
+### Notes
+
+- 纯**可选**字段：不加能力名、不改方法表 —— 旧消费方忽略即可（不会因为多了个字段而
+  把帧判成非法）；也不需要新版手机端在 `hello` 里声明什么（没有「旧手机端会误解它」的语义：
+  它只是一条展示用的状态）。
+- 0.6.0 的导出面保持不变（只多了两个类型导出）。
+
 ## [0.6.0] - 2026-10-03
 
 ### Added
