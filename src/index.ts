@@ -67,8 +67,26 @@ export { negotiate, intersectCapabilities } from './protocol/hello'
 export { MESSAGE_QUOTE_CAPABILITY, MESSAGE_DELETE_CAPABILITY } from './protocol/message-actions'
 export type { MessageQuote } from './protocol/message-actions'
 
+// ── 消息里的文件引用（§37 的延伸）：能力名 + 引用体 + 两端同一份校验口径 ──
+export {
+  MESSAGE_FILE_CAPABILITY,
+  MESSAGE_FILE_MAX,
+  MESSAGE_FILE_PATH_MAX,
+  sanitizeFileRefs,
+} from './protocol/message-files'
+export type { MessageFileRef, FileRefSanitizeResult } from './protocol/message-files'
+
 // ── Agent 相关能力名（新建会话时选定 Agent 的授权口径）──
 export { SESSION_AGENT_CAPABILITY } from './protocol/agents'
+
+// ── §22：上下文压缩方式的取值域 + 能力名（手机端选、电脑端执行）──
+export {
+  COMPRESS_MODES,
+  DEFAULT_COMPRESS_MODE,
+  COMPRESS_MODE_CAPABILITY,
+  compressModeOf,
+} from './protocol/compress'
+export type { CompressMode } from './protocol/compress'
 
 // ── 工具入参的两种呈现（折叠态一行摘要 / 展开态完整入参）的唯一格式化口径 ──
 export {
@@ -79,6 +97,46 @@ export {
   TOOL_DETAIL_MAX,
 } from './protocol/tool-args'
 export type { ToolArgsSummaryOptions, ToolArgsFormatOptions } from './protocol/tool-args'
+
+// ── §37：工作目录文件（能力名 / 限额 / base64 / 预览分类 / 路径工具，两端同一份）──
+export {
+  FILE_BROWSE_CAPABILITY,
+  FILE_DOWNLOAD_CAPABILITY,
+  FILE_UPLOAD_CAPABILITY,
+  FILE_EDIT_CAPABILITY,
+  FILE_CHUNK_BYTES,
+  FILE_UPLOAD_MAX_BYTES,
+  FILE_EDIT_MAX_BYTES,
+  FILE_TEXT_PREVIEW_MAX_BYTES,
+  FILE_IMAGE_PREVIEW_MAX_BYTES,
+  FILE_LIST_MAX_ENTRIES,
+  FILE_NAME_MAX_LEN,
+  UPLOAD_PART_SUFFIX,
+  FILE_DIRECT_ONLY_MESSAGE,
+  fileTransferDeniedReason,
+  splitNameExt,
+  previewKindOf,
+  previewLimitOf,
+  mimeTypeOf,
+  isEditableKind,
+  isEditableFileName,
+  detectEolStyle,
+  applyEolStyle,
+  hasUtf8Bom,
+  decodeUtf8Strict,
+  encodeEditedText,
+  bytesToBase64,
+  base64ToBytes,
+  formatFileSize,
+  normalizeRelPath,
+  joinRelPath,
+  parentOfRelPath,
+  baseNameOfPath,
+  isSafeEntryName,
+  duplicateNameCandidate,
+  compareFileEntries,
+} from './protocol/files'
+export type { FilePreviewKind, EolStyle } from './protocol/files'
 
 export { Endpoint } from './protocol/endpoint'
 export type {
@@ -129,6 +187,19 @@ export type {
   SetModelParams,
   ContextParams,
   CompressParams,
+  FileEntryDTO,
+  FileListParams,
+  FileListResult,
+  FileReadParams,
+  FileReadResult,
+  FileWriteBeginParams,
+  FileWriteBeginResult,
+  FileWriteChunkParams,
+  FileWriteChunkResult,
+  FileWriteFinishParams,
+  FileWriteFinishResult,
+  FileWriteAbortParams,
+  FileConflictPolicy,
 } from './protocol/api'
 export type { HelloParams, HelloResult, ClientInfo, NegotiationInput, Negotiated } from './protocol/hello'
 

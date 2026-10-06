@@ -93,7 +93,32 @@ describe('RtcTransport —— 协商与数据通道', () => {
     expect(gotGuest).toEqual([])
   })
 
-  it('对端离开 → 回到 connecting（等待重连）', async () => {
+  it('对端离开 → 回到 connecting（等待重连），且主动拆除的收尾事件不得把它记成 closed', async () => {
+    const [hostSig, guestSig] = createLoopbackSignaling()
+    const net = new FakeWebRTCNetwork()
+    const host = new RtcTransport({ role: 'host', signaling: hostSig, createPeerConnection: net.factory })
+    const guest = new RtcTransport({ role: 'guest', signaling: guestSig, createPeerConnection: net.factory })
+    const states: string[] = []
+    host.onStateChange((s) => states.push(s))
+    void host.start()
+    void guest.start()
+    await Promise.all([host.whenReady(), guest.whenReady()])
+
+    guestSig.close() // 手机离开
+    await flush()
+    await flush() // 把 dc/pc 的收尾事件（异步投递）也等完
+
+    expect(host.state).toBe('connecting')
+    /*
+     * 拆除动作（`dc.close()` / `pc.close()`）在真实浏览器里会补两条收尾事件回来。
+     * 让它们参与状态机的话，这里会多一个 `closed`：对端自己走开，却被电脑端
+     * 记成「链路故障」，白闪一次「出错（链路已关闭）」并重建一条不必重建的链路。
+     */
+    // 只有两段：连上（open）→ 对端走了（connecting）。多出来的任何一条都是泄漏的收尾事件
+    expect(states).toEqual(['open', 'connecting'])
+  })
+
+  it('收到新 offer（对端原地重开）→ 同步回到 `connecting`：旧通道拆了，授权随之作废', async () => {
     const [hostSig, guestSig] = createLoopbackSignaling()
     const net = new FakeWebRTCNetwork()
     const host = new RtcTransport({ role: 'host', signaling: hostSig, createPeerConnection: net.factory })
@@ -101,10 +126,20 @@ describe('RtcTransport —— 协商与数据通道', () => {
     void host.start()
     void guest.start()
     await Promise.all([host.whenReady(), guest.whenReady()])
+    const states: string[] = []
+    guest.onStateChange((s) => states.push(s))
 
-    guestSig.close() // 手机离开
+    // 电脑端 `dropLink()` 之后重发的那条 offer（同一个房间、新的 PeerConnection）
+    guestSig.onData?.({ kind: 'offer', sdp: { type: 'offer', sdp: 'offer-2' } })
+
+    /*
+     * 必须是**同步**的：这条 `connecting` 唯一的来源是 `handleRemote` 自己（旧通道拆掉时
+     * 不再补事件了）。等着它从别处来，上层就会带着旧链路的授权假在线（授权是 per-link 的，
+     * 电脑端每条链路都重开握手闸门）。
+     */
+    expect(guest.state).toBe('connecting')
     await flush()
-    expect(host.state).toBe('connecting')
+    expect(states).toEqual(['connecting'])
   })
 
   it('（回归）connectionState 先于 dc.onopen 时不得提前 ready —— 否则帧被静默丢弃', async () => {
@@ -211,6 +246,27 @@ describe('RtcTransport —— 被顶号（M6）', () => {
     expect(code).toBe('E_REPLACED')
     expect(order).toContain('state:closed')
     expect(guest.state).toBe('closed')
+  })
+
+  it('被顶号后终态是 `closed` —— 拆链时被关掉的通道不得再补一条 `connecting`', async () => {
+    const { guest, guestSig } = await pairWithSignaling()
+
+    /*
+     * 真机现场（2026-10）：电脑端被服务端顶号（手机端的自动重连会带来「旧 id 已过期」→
+     * `kicked`）→ 本端拆链 → 被关掉的 DataChannel 迟到一条 `onclose` → 终态 `closed`
+     * 被顶回 `connecting` → 上层（`virlen-app` 的 `PhoneControlService`）以为「链路还能自己
+     * 回来」，把已经排好的原地重开撤销 → **电脑端停在「等待手机连接…」，而信令房间早已没有它**，
+     * 手机端于是显示「电脑不在线」，怎么连都连不回来。
+     */
+    const states: string[] = []
+    guest.onStateChange((s) => states.push(s))
+
+    guestSig.kickFromServer('replaced')
+    await flush()
+    await flush() // 拆除动作的收尾事件（异步投递）都在这一轮里到齐
+
+    expect(guest.state).toBe('closed')
+    expect(states).toEqual(['closed'])
   })
 
   it('被顶号后：信令已关闭，后续对端变化不再重建 PC（不会又去抢线）', async () => {

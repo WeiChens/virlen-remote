@@ -11,6 +11,9 @@
  * 具体从电脑侧 store 投影到 DTO 的适配在 M2 的 `dto.ts` 落地。
  */
 import type { CallContext, Endpoint } from './endpoint'
+import type { CompressMode } from './compress'
+import type { FilePreviewKind } from './files'
+import type { MessageFileRef } from './message-files'
 import type { MessageQuote } from './message-actions'
 
 // ───────────────────────────── DTO（白名单投影） ─────────────────────────────
@@ -123,6 +126,24 @@ export interface MessageDTO {
    * 发给模型的是完整快照（与桌面一致，不要在协议层擅自裁剪用户要引用的内容）。
    */
   quotes?: MessageQuote[]
+  /**
+   * 本条消息引用了电脑上的哪些文件（**可选**；只有带文件引用的用户消息才有）。
+   *
+   * 语义与 `quotes` 并列但**不同源**：删除引用是**快照**（存正文，原消息没了也还在），
+   * 这里是**路径**（存位置，AI 读的那一刻磁盘上是什么就是什么）。与桌面输入框的文件附件
+   * 同一条口径：不搬运文件内容，只把「用户附了这个文件」告诉模型（`[User attached file] <path>`），
+   * 具体内容由模型用 `read_file` 按需读取。
+   *
+   * 为什么结构化下行而不展平进 `text`：电脑侧投影正文时本就已经把文件块展平成
+   * `[文件] <名字>` 的占位符（§7-⑦，与图片同一套降级规则），而那个占位符**只有名字没有路径、
+   * 也没有体积**（同一目录下的两个 `index.ts` 长得一模一样）。手机端要显示「附了哪个文件」
+   * 就得靠这个结构化字段；两条路同时走会显示两遍（与 `quotes` 同一条纪律）。
+   *
+   * 消费方注意：`path` 是**电脑上的绝对路径**（与 `SessionSummaryDTO.workspace` / `host.file.list`
+   * 的 `absPath` 同一口径，手机上本来就看得见工作目录），不是可在手机上打开的东西 ——
+   * 手机上它只是一段可复制的文本。
+   */
+  files?: MessageFileRef[]
 }
 
 export interface RuntimeDTO {
@@ -271,6 +292,19 @@ export interface SendParams {
    * 另外这是 `session.send` 的一个参数，**不是新权限** —— 越权防线仍是 `session.send`。
    */
   quotes?: MessageQuote[]
+  /**
+   * 引用电脑上的若干文件（可选）—— 手机端在文件面板里挑出来的那些。
+   *
+   * 电脑端把它组装成 `{type:'file'}` 内容块（与桌面输入框的文件附件走**同一个**
+   * `buildUserContent`），因此下游（引擎 / 持久化 / 桌面渲染 / 导出）的语义与桌面完全一致。
+   * **不搬运内容**：文件内容由 AI 用 `read_file` 按需读取（桌面 `FileAttachment` 同此口径）。
+   *
+   * ⚠️ **只在电脑端声明 `MESSAGE_FILE_CAPABILITY` 时才能发**（与 `quotes` 同一条教训）：
+   * 旧电脑端不认这个字段，RPC 会「成功」而文件引用被静默丢掉。
+   * ⚠️ 形状非法 / 超过 `MESSAGE_FILE_MAX` 时电脑侧**拒整条**（`E_BAD_REQUEST`，不静默丢那一条）——
+   * 校验口径见 `message-files.ts::sanitizeFileRefs`（两端同一份）。
+   */
+  files?: MessageFileRef[]
 }
 
 export interface MsgPageParams {
@@ -415,6 +449,13 @@ export interface ContextParams {
 export interface CompressParams {
   sessionId: string
   /**
+   * 压缩方式（缺省 = 电脑侧设置里的 `contextCompressMode`）。
+   *
+   * ⚠️ **只在电脑端声明 `COMPRESS_MODE_CAPABILITY` 时才能传**：旧电脑端不认这个字段，
+   * RPC 照样成功 —— 但它会按电脑侧设置的方式压缩（见 `compress.ts` 头注释）。
+   */
+  mode?: CompressMode
+  /**
    * 必须为 `true`。
    *
    * 压缩会**用摘要替换整段历史**（不可逆，与删除会话同档）——§16.3-3 要求手机端二次确认，
@@ -434,6 +475,168 @@ export type AnswerRejectReason =
 export interface AnswerResult {
   accepted: boolean
   reason?: AnswerRejectReason
+}
+
+// ── §37：工作目录文件（手机端浏览 / 预览 / 下载 / 上传）──
+
+/**
+ * 目录里的一条（`host.file.list`）。
+ *
+ * 白名单投影：**只有名字、是否目录、大小、修改时刻** —— 不给绝对路径（那要拼接才有意义，
+ * 而拼接口径放在电脑侧由 `FileListResult` 统一给）、不给权限位、不给 inode 这类本机细节。
+ */
+export interface FileEntryDTO {
+  name: string
+  isDir: boolean
+  /** 字节数（目录恒为 0）。 */
+  size: number
+  /** 修改时刻（ms 时间戳）；拿不到时字段缺席（手机端不显示而不是显示 1970）。 */
+  mtimeMs?: number
+}
+
+export interface FileListParams {
+  sessionId: string
+  /**
+   * **相对**会话工作目录的路径（`'src/store'`）；缺省 / 空串 = 工作目录根。
+   *
+   * ⚠️ 手机端**不得**传绝对路径、也不得传 `..` —— 电脑侧会用 `normalizeRelPath` 规整，
+   * 逃出工作目录的段一律被丢掉；真正的拒绝发生在 `resolveSafePath`（工作目录 + 黑白名单）。
+   */
+  path?: string
+}
+
+export interface FileListResult {
+  /** 规整后的相对路径（`''` = 工作目录根）—— 手机端原样用于后续请求。 */
+  relPath: string
+  /** 绝对路径（电脑侧算好，手机端只用于显示「你在看电脑上的哪个目录」）。 */
+  absPath: string
+  entries: FileEntryDTO[]
+  /** 条目超过 `FILE_LIST_MAX_ENTRIES` 而截断（手机端如实提示，不假装目录就这么大）。 */
+  truncated?: boolean
+}
+
+export interface FileReadParams {
+  sessionId: string
+  /** 相对会话工作目录的文件路径。 */
+  path: string
+  /** 起始字节偏移（缺省 0）—— 分块下载 / 预览都靠它。 */
+  offset?: number
+  /** 期望长度（字节）；电脑侧按 `FILE_CHUNK_BYTES` 再夹一次。 */
+  length?: number
+}
+
+export interface FileReadResult {
+  /** 本块字节的 **base64**（无 `data:` 前缀）。 */
+  data: string
+  /** 本块在文件中的起始偏移（与请求一致；电脑侧夹过长度后仍是原值）。 */
+  offset: number
+  /** 文件总大小（字节）—— 首块即给全，手机端因此能先算进度再决定要不要继续。 */
+  size: number
+  /** 本块是否已到文件末尾（`true` = 拼完就完整）。 */
+  eof: boolean
+  /**
+   * 预览分类（**电脑侧算，手机端不猜**）。
+   *
+   * 手机端据此选渲染器；`binary` = 只能下载。两边跑的是共享包里同一个
+   * `previewKindOf`，所以正常情况下永远一致 —— 把它放进协议是为了让**将来变规则时**
+   * 旧手机端仍按电脑的意思渲染，而不是按自己那份过期的表。
+   */
+  kind: FilePreviewKind
+  /** MIME（手机端给 Blob / `<img>` 用）。 */
+  mime: string
+  /**
+   * 文件当前的修改时刻（ms 时间戳；拿不到时字段缺席）。
+   *
+   * 它是**编辑保存的第一步**：手机端打开文件时记下它，保存时原样回传（`expectMtimeMs`），
+   * 电脑侧比对不一致就拒 —— 否则手机上改的是「几分钟前的那一版」，一保存就把电脑上
+   * （AI / 用户 / 编辑器）刚写进去的内容**静默吞掉**。
+   */
+  mtimeMs?: number
+}
+
+/** 上传时同名冲突怎么办。 */
+export type FileConflictPolicy =
+  /** 自动加「 - 副本」（默认；与桌面侧文件操作同一条口径）。 */
+  | 'rename'
+  /** 直接拒（`E_CONFLICT`），让用户在手机上自己改名。 */
+  | 'reject'
+
+export interface FileWriteBeginParams {
+  sessionId: string
+  /** 目标目录（**相对**工作目录；缺省 = 根）。 */
+  dir?: string
+  /** 目标文件名（不含路径）。 */
+  name: string
+  /** 文件总大小（字节）—— 电脑侧据此在**开始前**就拒掉超限的上传。 */
+  size: number
+  /** 缺省 `'rename'`。 */
+  onConflict?: FileConflictPolicy
+  /**
+   * **覆写已存在的文件**（编辑保存走这条路；缺省 = 上传新建）。
+   *
+   * ⚠️ 三处语义分叉，都靠它切换：
+   * 1. 目标**必须已存在**（不存在 = 路径错了 → `E_NOT_FOUND`，**不新建** —— 否则手机端一个
+   *    路径笔误会在用户目录里凭空造出一个文件）；
+   * 2. **不做同名改名**：`finish` 原样覆写目标，不回「 - 副本」（那是上传才需要的口径）；
+   * 3. 需要 `FILE_EDIT_CAPABILITY`，并把 `expectMtimeMs` / `expectSize` 一起校验。
+   */
+  overwrite?: boolean
+  /**
+   * 打开这份文件时电脑侧给的 `mtimeMs`（覆写时校验；不一致 = 电脑上已经变了 → `E_CONFLICT`）。
+   *
+   * 电脑侧**拿不到 mtime 时按冲突处理**（宁可让用户重新载入，也不拿一份可能已经过期的内容
+   * 去覆盖别人的改动）。
+   */
+  expectMtimeMs?: number
+  /** 打开这份文件时的大小（覆写时校验；与 `expectMtimeMs` 一起用，任一不符即拒）。 */
+  expectSize?: number
+}
+
+export interface FileWriteBeginResult {
+  /** 本次上传的票据（后续 `chunk` / `finish` / `abort` 都带着它）。 */
+  uploadId: string
+  /** 冲突消解后的**最终**文件名 —— 手机端据此显示「已存为 a - 副本.txt」。 */
+  name: string
+  /** 最终文件的相对路径（相对工作目录）。 */
+  relPath: string
+  /** 已接收的字节数（恒 0；预留给将来的续传）。 */
+  received: number
+}
+
+export interface FileWriteChunkParams {
+  uploadId: string
+  /** 本块在文件中的起始偏移（必须等于电脑侧已接收的字节数 —— 乱序即拒）。 */
+  offset: number
+  /** **base64** 的本块字节。 */
+  data: string
+}
+
+export interface FileWriteChunkResult {
+  /** 电脑侧累计已接收的字节数（手机端据此显示进度）。 */
+  received: number
+}
+
+export interface FileWriteFinishParams {
+  uploadId: string
+}
+
+export interface FileWriteFinishResult {
+  /** 最终文件名（与 `begin` 应答一致，便于手机端不依赖本地状态显示结果）。 */
+  name: string
+  relPath: string
+  /** 落盘后的实际字节数（与申报的 `size` 不一致时以它为准）。 */
+  size: number
+  /**
+   * 落盘后的修改时刻 —— 覆写保存的回执。
+   *
+   * 为何要回这一个字段：手机端要能**连改两次**。第一次保存后本地记的 mtime 已经过期，
+   * 拿它去校验第二次保存必然「冲突」；覆写时电脑侧因此回一个当前值。
+   */
+  mtimeMs?: number
+}
+
+export interface FileWriteAbortParams {
+  uploadId: string
 }
 
 // ── M4 写操作参数 ──
@@ -577,8 +780,39 @@ export interface HostApi {
    * fire-and-forget：RPC 只回投递确认 —— 进度走 `runtime.compacting`，结果走
    * `host.event.session.messages.reset`（手机重拉窗口）+ `message.added`（摘要消息）。
    * ⚠️ 必须带 `confirm: true`；上下文充裕（低于 40%）时电脑侧直接拒（与桌面 token 环同判据）。
+   * 方式由 `mode` 指定（需电脑端声明 `COMPRESS_MODE_CAPABILITY`），不传则用电脑侧设置里的那一档。
    */
   'host.session.compress': { params: CompressParams; result: { ok: true } }
+  // ── §37：工作目录文件（只读两档 + 写一档，能力名见 `files.ts`）──
+  /**
+   * 列目录（`file.browse`）。
+   *
+   * 候选集就是**会话自己的工作目录**（含子目录）：越权防线是电脑侧的 `resolveSafePath`
+   * （工作目录 + 黑白名单），手机端传什么路径都不构成越权。
+   */
+  'host.file.list': { params: FileListParams; result: FileListResult }
+  /**
+   * 读文件的一个分块（`file.download`）—— 预览与下载走**同一条**路径。
+   *
+   * 分块而不是整文件（见 `files.ts` 文件头）：单次请求的内存上界固定，进度可见、可取消。
+   */
+  'host.file.read': { params: FileReadParams; result: FileReadResult }
+  /**
+   * 上传 / **覆写**：开始（`file.upload`；`overwrite: true` 时走 `file.edit`）。
+   *
+   * 三道校验都在这里做完（大小上限 / 名字合法性 / 目标目录可写），**且冲突消解在开始时就定名**
+   * —— 于是「传到一半才发现同名」不会发生，手机端能在动手前就把最终名字告诉用户。
+   *
+   * 覆写（编辑保存）复用同一个方法，但语义分叉见 `FileWriteBeginParams.overwrite`：
+   * 目标必须已存在、不改名、并校验 `expectMtimeMs` / `expectSize`。
+   */
+  'host.file.write.begin': { params: FileWriteBeginParams; result: FileWriteBeginResult }
+  /** 上传 / 覆写：写一块（偏移必须与电脑侧已接收字节数一致）。 */
+  'host.file.write.chunk': { params: FileWriteChunkParams; result: FileWriteChunkResult }
+  /** 上传 / 覆写：收尾（校验字节数 → 从临时文件 `rename` 落盘；覆写时**替换**目标，不改名）。 */
+  'host.file.write.finish': { params: FileWriteFinishParams; result: FileWriteFinishResult }
+  /** 上传 / 覆写：放弃（删临时文件；用户取消 / 出错都走它，避免留垃圾）。 */
+  'host.file.write.abort': { params: FileWriteAbortParams; result: { ok: true } }
 }
 
 /** 手机实现、电脑调用。 */

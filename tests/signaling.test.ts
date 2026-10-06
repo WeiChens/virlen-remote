@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BridgeError, SseSignalingClient, fetchRoomStatus } from '../src/index'
+import { BridgeError, SseSignalingClient, fetchHostOnlineMap, fetchRoomStatus } from '../src/index'
 import type { EventSourceLike } from '../src/index'
 
 interface FetchCall {
@@ -248,5 +248,43 @@ describe('fetchRoomStatus', () => {
     }) as unknown as typeof fetch
     await expect(fetchRoomStatus({ baseUrl: 'https://x/', rooms: [], fetchImpl })).resolves.toEqual([])
     expect(called).toBe(0)
+  })
+})
+
+describe('fetchHostOnlineMap', () => {
+  /** 只应答 `answered` 里的房间，其余房间一律「没问到」。 */
+  function makeFetch(answered: Array<{ room: string; hostOnline: boolean }>) {
+    return (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ rooms: answered }),
+    })) as unknown as typeof fetch
+  }
+
+  it('只有服务端明确答过的电脑才进名单（true / false 都算答过）', async () => {
+    const map = await fetchHostOnlineMap(
+      'https://x/api/rtc',
+      ['dk-a', 'dk-b', 'dk-c'],
+      makeFetch([
+        { room: 'virlen:dk-a', hostOnline: true },
+        { room: 'virlen:dk-b', hostOnline: false },
+      ]),
+    )
+    expect(map.get('dk-a')).toBe(true)
+    expect(map.get('dk-b')).toBe(false)
+    expect(map.has('dk-c')).toBe(false)
+  })
+
+  it('问不到（服务挂了 / 老服务没这接口）→ 缺键（「未知」）而不是 false —— 不能凭空报「不在线」', async () => {
+    const failing = (async () => {
+      throw new Error('network down')
+    }) as unknown as typeof fetch
+    const map = await fetchHostOnlineMap('https://x/', ['dk-a', 'dk-b'], failing)
+    /*
+     * 旧实现这里是 `?? false` —— 名单上每一台都变成「电脑不在线」，与「问不到」是两件事。
+     * 手机端登录页据此显示「状态未知」（`undefined`），而不是替服务端下结论。
+     */
+    expect(map.size).toBe(0)
+    expect(map.get('dk-a')).toBeUndefined()
   })
 })

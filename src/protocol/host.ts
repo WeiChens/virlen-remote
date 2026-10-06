@@ -21,6 +21,17 @@ import type {
   CreateSessionParams,
   DeleteMessageParams,
   DeleteSessionParams,
+  FileListParams,
+  FileListResult,
+  FileReadParams,
+  FileReadResult,
+  FileWriteAbortParams,
+  FileWriteBeginParams,
+  FileWriteBeginResult,
+  FileWriteChunkParams,
+  FileWriteChunkResult,
+  FileWriteFinishParams,
+  FileWriteFinishResult,
   HostEvents,
   InteractionDTO,
   MessageDTO,
@@ -87,6 +98,24 @@ export interface HostDataSource {
    * ⚠️ 实现侧必须校验 `confirm === true`（不得依赖手机 UI），并自行保证「正在回复 / 正在压缩」不被并发触发。
    */
   compress(params: CompressParams): { ok: true } | Promise<{ ok: true }>
+  // ── §37：工作目录文件 ──
+  /**
+   * 列目录（实现侧必须自己过安全校验与 ACL）。
+   *
+   * ⚠️ 实现侧还要自己判「这条链路能不能传文件」（非中继）：那是**链路事实**，
+   * 不在本文档层能看到的范围里（见 `TransferTier` / `LinkKind`）。
+   */
+  listFiles(params: FileListParams): FileListResult | Promise<FileListResult>
+  /** 读一个分块（预览与下载同一条路）。 */
+  readFile(params: FileReadParams): FileReadResult | Promise<FileReadResult>
+  /** 上传：开始（校验 + 定名 + 建临时文件）。 */
+  beginFileWrite(params: FileWriteBeginParams): FileWriteBeginResult | Promise<FileWriteBeginResult>
+  /** 上传：写一块（偏移必须与已接收字节数一致）。 */
+  writeFileChunk(params: FileWriteChunkParams): FileWriteChunkResult | Promise<FileWriteChunkResult>
+  /** 上传：收尾（临时文件 → 目标名，原子落盘）。 */
+  finishFileWrite(params: FileWriteFinishParams): FileWriteFinishResult | Promise<FileWriteFinishResult>
+  /** 上传：放弃（删临时文件）。 */
+  abortFileWrite(params: FileWriteAbortParams): { ok: true } | Promise<{ ok: true }>
 }
 
 export type HostEmit = <E extends keyof HostEvents & string>(topic: E, payload: HostEvents[E]) => void
@@ -159,6 +188,13 @@ export function registerHostHandlers(
   on('host.workspace.list', async () => ({ workspaces: await source.listWorkspaces() }))
   on('host.session.context', async (params) => source.getContext(params as ContextParams))
   on('host.session.compress', async (params) => source.compress(params as CompressParams))
+  // ── §37：工作目录文件 ──
+  on('host.file.list', async (params) => source.listFiles(params as FileListParams))
+  on('host.file.read', async (params) => source.readFile(params as FileReadParams))
+  on('host.file.write.begin', async (params) => source.beginFileWrite(params as FileWriteBeginParams))
+  on('host.file.write.chunk', async (params) => source.writeFileChunk(params as FileWriteChunkParams))
+  on('host.file.write.finish', async (params) => source.finishFileWrite(params as FileWriteFinishParams))
+  on('host.file.write.abort', async (params) => source.abortFileWrite(params as FileWriteAbortParams))
 
   return {
     emit,

@@ -3,6 +3,123 @@
 本文件记录对外可见的变更（协议 / 导出面 / 行为）。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### Added
+
+- **消息里引用电脑上的文件（§37 的延伸）**：`SendParams.files?: MessageFileRef[]` 与
+  `MessageDTO.files?: MessageFileRef[]` —— 手机端把文件面板里挑中的文件挂在要发的消息上，
+  电脑端组装成 `{type:'file'}` 内容块（与桌面输入框的「文件附件」同一条口径：**只带路径，
+  不搬运内容**，内容由 AI 用 `read_file` 按需读）。
+  新能力名 `message.file`（**功能标记**，不是权限 —— 越权防线仍是 `session.send`）与新导出：
+  `MessageFileRef` / `sanitizeFileRefs` / `MESSAGE_FILE_MAX`（20）/ `MESSAGE_FILE_PATH_MAX`（1024）/`FileRefSanitizeResult`。
+
+  ⚠️ **校验口径只有一份**（`sanitizeFileRefs`，两端共用）：形状非法 / 超条数 / 路径过长 →
+  **拒整条**（`E_BAD_REQUEST`），**不静默丢掉那一条** —— 丢一条时手机端 chip 还在、用户以为
+  带上了，而 AI 从未看到（§36 引用那次踩过的坑）。`isDir` / `size` 只是展示元数据（形状不对
+  就丢字段）；路径分隔符统一归一为 `/`；同一路径去重。
+
+  ⚠️ **文件引用不进 `text`**（与 `quotes` 同一条纪律）：电脑侧投影正文时本就会把文件块展平成
+  `[文件] <名字>`（§7-⑦，与图片同一套降级规则），两条路同时走会显示两遍，而那个展平占位符
+  **只有名字没有路径**（同一目录下两个 `index.ts` 长得一样）。
+
+- **演示宿主支持文件引用**：`createMockHostDataSource().send` 调同一份 `sanitizeFileRefs`
+  （形状非法同样 `E_BAD_REQUEST`），并在 `MessageDTO.files` 上如实回带；hello 声明 `message.file`
+  —— 否则手机端会隐藏入口，用例就永远测不到真实链路。
+
+- **编辑保存 / 覆写已有文件（§37）**：`host.file.write.begin` 新增 `overwrite?: boolean` +
+  `expectMtimeMs?` / `expectSize?`，`host.file.write.finish` 与 `host.file.read` 的应答各新增
+  `mtimeMs?`（覆写后的新版本 / 打开时的版本凭据）。
+  新能力名 `file.edit`（**权限 + 功能标记**，默认开，与 `file.upload` 分开：上传只让目录里多一个
+  文件，覆写是把已有文件的内容换掉）与新导出：`FILE_EDIT_MAX_BYTES`（256KB）/ `EolStyle` /
+  `isEditableKind` / `isEditableFileName` / `detectEolStyle` / `applyEolStyle` / `hasUtf8Bom` /
+  `decodeUtf8Strict` / `encodeEditedText`。
+
+  ⚠️ **覆写与上传是两条路**：目标必须**已存在**（不存在即 `E_NOT_FOUND`，不新建）、
+  **不做同名改名**（不产生「 - 副本」）、**必须带打开时的版本**（不给即 `E_BAD_REQUEST` ——
+  于是「盲写」这条路根本不存在），版本不符 → `E_CONFLICT`。旧电脑端会静默忽略 `overwrite`
+  （一次覆盖保存会退化成「另存为 - 副本」，用户以为改了、原文件其实没动），故手机端只在
+  `hello` 里看到 `file.edit` 时才给编辑入口。
+
+- **演示宿主支持覆写**：`createMockHostDataSource()` 的文件树现在**每格带自己的 mtime**
+  （写盘即换；否则冲突那条路径永远走不到），`beginFileWrite({ overwrite: true })` 会校验
+  目标存在 / 可编辑扩展名 / 编辑上限 / `expectMtimeMs` / `expectSize`，`writeMockFile()` 可以
+  模拟「电脑上有人改了它」。
+
+- **上下文压缩方式（§22）**：`host.session.compress` 新增 `CompressParams.mode?: 'ai' | 'raw'` ——
+  手机端可以选「AI 摘要」（一次模型调用，最省 token，但慢且要花钱）或「正文压缩」（纯本地渲染，
+  毫秒级零消耗，用户 / 助手正文一字不删）。
+  新能力名 `session.compress.mode`（**功能标记**，不是权限；压缩本身的授权仍是 `session.compress`）
+  与新导出：`COMPRESS_MODES` / `DEFAULT_COMPRESS_MODE` / `COMPRESS_MODE_CAPABILITY` / `compressModeOf`
+  与类型 `CompressMode`。
+
+  ⚠️ **为何要能力名**：`mode` 是个普通字段，**旧电脑端会静默忽略**它而按电脑侧设置里的方式压缩
+  —— 用户侧表现为「我点了正文压缩，结果还是 AI 摘要（还花了钱）」，没有任何报错可查。
+  手机端因此只在电脑端声明该能力时才给选择器（否则只给一个按钮，走电脑侧设置）。
+  不传 = 缺省 `ai`（与旧手机端行为一字不变）；**传了但不认识即 `E_BAD_REQUEST`** ——
+  落回缺省等于把手机端的拼写错误变成一次要花钱的模型调用。
+
+- **演示宿主按 `mode` 真的走出不同产物**：`createMockHostDataSource().compress` 现在校验 `mode`
+  （未知取值 → `E_BAD_REQUEST`）并按它生成不同的摘要文案，另提供 `lastCompress()` 观察口
+  （返回最后**真正执行**的那次 `{ sessionId, mode }`）—— 两种方式的差别在真机上就是产物形态，
+  mock 若给同一句话，手机端的两条支路就再也分不开了。
+
+- **工作目录文件（§37）**：手机端浏览 / 预览 / 下载 / 上传电脑上**会话工作目录**里的文件。
+  六个新方法（电脑实现、手机调用）：
+  - `host.file.list`（列目录，非递归，**只给**名字 / 是否目录 / 大小 / 修改时刻）；
+  - `host.file.read`（分块读，单次最多 `FILE_CHUNK_BYTES` = 256KB）；
+  - `host.file.write.begin` / `.chunk` / `.finish` / `.abort`（分块上传，**先写临时文件
+    `.virlen-part`、`finish` 才改名**——中断不会在用户项目里留下半截文件）。
+
+  三个新能力名（ACL 三档，默认全开）：`file.browse` / `file.download` / `file.upload`。
+  新导出（两端同一份口径）：`previewKindOf` / `previewLimitOf` / `mimeTypeOf` / `bytesToBase64` /
+  `base64ToBytes` / `formatFileSize` / `normalizeRelPath` / `joinRelPath` / `parentOfRelPath` /
+  `baseNameOfPath` / `isSafeEntryName` / `duplicateNameCandidate` / `compareFileEntries` /
+  `fileTransferDeniedReason` 与限额常量（`FILE_CHUNK_BYTES` / `FILE_UPLOAD_MAX_BYTES` =
+  32MB / `FILE_TEXT_PREVIEW_MAX_BYTES` = 1MB / `FILE_IMAGE_PREVIEW_MAX_BYTES` = 8MB /
+  `FILE_LIST_MAX_ENTRIES` / `FILE_NAME_MAX_LEN` / `UPLOAD_PART_SUFFIX`）。
+
+  **非中继门槛**（用户 2026-10 拍板）：只在**确认走了 TURN 中继**（`relay`）时才拒，`direct` 与
+  `unknown` 都放行——`unknown` 是常态（同源 Broadcast 联调 / 非 WebRTC 链路），把它判成禁用
+  等于让功能在联调里根本进不来。口径收敛在 `fileTransferDeniedReason()`（两端同一句话）。
+
+  ⚠️ **为何是 base64 分块而不是整文件**：帧层的载荷是 UTF-8 JSON 且要**攒齐全部分片**才交付，
+  整文件塞一次会同时炸掉两端的组装缓冲（也不会改帧格式、不升主版本）。代价是 base64 的 33%
+  开销；换来的是进度可见、随时可取消、单请求内存上界固定。
+
+  磁盘安全**不在本包**：越权防线是消费方（电脑端）的 `resolveSafePath`（会话工作目录 + 黑白名单），
+  本包只提供把手机传来的相对路径规整成可控形状的工具（`normalizeRelPath` 会把逃出工作目录的
+  `..` 段就地吃掉）。
+
+- **测试宿主新增演示文件树**（`virlen-remote/testing`）：`createMockHostDataSource()` 自带一棵
+  真的演示文件树（含一张真 PNG 与一个未知类型的 `build/app.bin`），并提供
+  `readMockFile` / `writeMockFile` / `listMockFiles` 三个观察口（上传是否真的落到对的路径与字节，
+  只能从宿主侧看）。新增 `MockHostOptions.fileLinkKind: 'direct' | 'relay'` 用于模拟非中继门槛。
+
+### Fixed
+
+- **主动拆链不再补发事件（`RtcTransport::teardownPeer`）**：以前只是 `close()`，而浏览器里
+  `dc.onclose` / `pc.onconnectionstatechange` 是**异步投递**的 —— 它们会在拆链方刚刚宣告的
+  终态（`close()` / 被顶号都置 `closed`）**之后**再补一个 `connecting`。上游据此以为「链路还能
+  自己回来」，把已经排好的原地重开撤销掉：电脑端停在「等待手机连接…」，而信令房间里早已没有它
+  ——手机端因此显示「电脑不在线」且再也连不回来（2026-10 真机）。现在拆除前先摘监听器，
+  「这条链路此刻是什么结论」一律由调用点显式 `setState` 说明。
+  顺带修好同一个根的另一面：`pc.close()` 触发的 `connectionstatechange(closed)` 让上游把
+  「手机主动走开」当成链路故障（每次对端离开都白进一次 `closed` 并重建一条链路）。
+  同时**换对端（收到新 offer）时显式回到 `connecting`** —— 那条事件以前由被关掉的旧通道代劳，
+  拆除静默之后必须自己说：新通道 `open` 之前链路不可用，且上层要重新握手（授权是 per-link 的）。
+  回归：`tests/rtc-transport.test.ts`（假 WebRTC 的 `close()` 也改为异步投递，与浏览器一致）。
+- **`fetchHostOnlineMap` 不再把「问不到」当成「不在线」**：旧实现是 `?? false` —— 一次查询失败
+  （服务不可达 / 老服务没 `/status`）就让名单上**每一台**电脑都变成「电脑不在线」，而这与
+  「服务端明确答了 `hostOnline: false`」是两件事。现在只写入**服务端明确答过**的房间，
+  缺键即「未知」（消费方读到 `undefined` 自己渲染「状态未知」，与 `fetchRoomStatus`
+  「失败返回空而不抛错」的本意一致）。
+
+### Notes
+
+- 两者都**不改导出面**（`fetchHostOnlineMap` 的返回类型仍是 `Map<string, boolean>`，只是可能缺键；
+  `RtcTransport` 的公开方法集不变），对消费方无破坏性变更。
+
 ## [0.6.1] - 2026-10-05
 
 ### Added

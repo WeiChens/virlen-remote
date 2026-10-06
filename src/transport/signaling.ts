@@ -303,7 +303,18 @@ export async function fetchRoomStatus(options: FetchRoomStatusOptions): Promise<
   }
 }
 
-/** 便利封装：`电脑 key → 在线?`（手机端列表用）。 */
+/**
+ * 便利封装：`电脑 key → 在线?`（手机端列表用）。
+ *
+ * ⚠️ **问不到的电脑**（信令服务不可达 / 老服务没有 `/status` / 应答里没有这一间）
+ * **不进 Map**，消费方读到 `undefined` 就显示「状态未知」—— 把「不知道」变成 `false`
+ * 是一句假话：名单上每一台都会变成「电脑不在线」，而它们可能都好端端在网上
+ *（真机现场：电脑端「等待手机连接…」、手机端一行行全是「电脑不在线」，实际那个房间在不在
+ * 只取决于这次查询成不成功）。判「在线」与判「离线」都只能看服务端的明确答复。
+ *
+ * 返回类型仍是 `Map<string, boolean>`：缺键的语义就是「没问到」，而 `Map.get` 本来就返回
+ * `boolean | undefined` —— 消费方（手机端登录页的 `DeviceRow`）已经在渲染「状态未知」了。
+ */
 export async function fetchHostOnlineMap(
   baseUrl: string,
   hostKeys: string[],
@@ -312,6 +323,9 @@ export async function fetchHostOnlineMap(
   const statuses = await fetchRoomStatus({ baseUrl, rooms: hostKeys.map(roomFor), ...(fetchImpl ? { fetchImpl } : {}) })
   const byRoom = new Map(statuses.map((s) => [s.room, s.hostOnline]))
   const out = new Map<string, boolean>()
-  for (const key of hostKeys) out.set(key, byRoom.get(roomFor(key)) ?? false)
+  for (const key of hostKeys) {
+    const online = byRoom.get(roomFor(key))
+    if (typeof online === 'boolean') out.set(key, online)
+  }
   return out
 }

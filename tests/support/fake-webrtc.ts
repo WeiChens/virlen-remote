@@ -5,7 +5,10 @@
  * 与**字节通道**。行为对齐真实语义：
  *  - offerer 的 `createDataChannel` 在连接后交付给 answerer 的 `ondatachannel`；
  *  - `signalingState` 随 local/remote description 变化（`have-local-offer` / `have-remote-offer` / `stable`）；
- *  - 双方各持一端 channel，`send` 异步投递到对端 `onmessage`。
+ *  - 双方各持一端 channel，`send` 异步投递到对端 `onmessage`；
+ *  - ⚠️ **`close()` 的事件是异步投递的**（与浏览器一致，规范里也是排进任务队列）：
+ *    同步触发会让「拆链之后泄露的那条 `onclose` 把终态顶回 `connecting`」这类缺陷在测试里
+ *    凭空消失（被顶号后的终态就是这么丢的，见 rtc-transport.test.ts）。
  */
 
 export class FakeDataChannel {
@@ -27,7 +30,8 @@ export class FakeDataChannel {
   close(): void {
     if (this.readyState === 'closed') return
     this.readyState = 'closed'
-    this.onclose?.()
+    // 消息体在**投递那一刻**才读（与浏览器一致）：拆链方若期间摘了监听器，这里就什么都不发生
+    queueMicrotask(() => this.onclose?.())
   }
 }
 
@@ -91,7 +95,8 @@ export class FakePeerConnection {
   close(): void {
     if (this.connectionState === 'closed') return
     this.connectionState = 'closed'
-    this.onconnectionstatechange?.()
+    // 同上：收尾事件异步投递（浏览器里 `close()` 之后才收到 `connectionstatechange`）
+    queueMicrotask(() => this.onconnectionstatechange?.())
   }
 }
 

@@ -202,6 +202,14 @@ export class RtcTransport implements Transport {
       if (msg.kind === 'offer') {
         // 每个 offer 视作新会话：清旧上下文，避免新旧 ICE 串味（同 rtc.js）
         if (this.pc) this.teardownPeer()
+        /*
+         * 换对端 = **代际更替**：旧通道已经拆掉，新通道 `open` 之前这条链路不可用。
+         * 这句以前由「被关掉的旧 dc 迟到的那条 `onclose`」代劳（真实浏览器里 close 事件是
+         * 异步投递的），而 `teardownPeer` 现在主动静默（见那里的说明）—— 故必须显式补上：
+         * 上层（电脑端 `PhoneControlService` / 手机端 `connectionStore`）靠这条事件把
+         * 「授权」作废，回到 `open` 后重新 `hello`。少了它，新链路会带着旧链路的授权假在线。
+         */
+        this.setState('connecting')
         const pc = this.ensurePC()
         await pc.setRemoteDescription(msg.sdp)
         await this.flushCandidates()
@@ -283,20 +291,49 @@ export class RtcTransport implements Transport {
     }
   }
 
+  /**
+   * 拆掉当前的 PeerConnection / DataChannel。
+   *
+   * ⚠️ **先摘监听器，再关**。真实浏览器里 `close()` 的收尾事件（`dc.onclose` /
+   * `pc.onconnectionstatechange`）是**异步投递**的（进任务队列），而拆链的调用点往往紧接着就要
+   * 宣告一个**终态**（`close()` 与 `onKicked()` 都置 `closed`）。留着监听器，那条迟到的事件就会在
+   * 终态之后补一个 `connecting` —— 上层会据此认为「链路还能自己回来」，把已经排好的原地重开
+   * 撤销掉：电脑端就此停在「等待手机连接…」，而信令房间早已没有它（手机端因此显示
+   * 「电脑不在线」，且再也连不回来。2026-10 真机反馈，见 `rtc-transport.test.ts` 的被顶号用例）。
+   *
+   * 所以：**主动拆除 = 静默**。这条链路此刻是什么结论，一律由调用点紧接着显式 `setState` 说明
+   * （`close` / `onKicked` → `closed`；对端离开 → `connecting`；收到新 offer 换对端 → `connecting`）。
+   *
+   * 顺带一处：`pc.close()` 也会让 `connectionState` 变 `closed` 并回调同一个监听器 —— 摘掉它，
+   * 「手机主动走开」这类**主动拆除**才不会被记成「链路故障」（否则每次对端离开，电脑端都会白闪
+   * 一次「出错（链路已关闭）」，再靠 3 秒的自愈重建一条本来不必重建的链路）。
+   */
   private teardownPeer(): void {
     this.pendingCandidates = []
-    try {
-      this.dc?.close()
-    } catch {
-      /* 忽略 */
-    }
-    try {
-      this.pc?.close()
-    } catch {
-      /* 忽略 */
-    }
+    const dc = this.dc
+    const pc = this.pc
     this.dc = null
     this.pc = null
+    if (dc) {
+      dc.onopen = null
+      dc.onclose = null
+      dc.onmessage = null
+      try {
+        dc.close()
+      } catch {
+        /* 忽略 */
+      }
+    }
+    if (pc) {
+      pc.onicecandidate = null
+      pc.onconnectionstatechange = null
+      pc.ondatachannel = null
+      try {
+        pc.close()
+      } catch {
+        /* 忽略 */
+      }
+    }
   }
 
   private fail(error: Error): void {
