@@ -149,7 +149,7 @@ export type {
 } from './protocol/endpoint'
 
 export { createCaller, createSubscriber, registerHandlers } from './protocol/api'
-export { DEFAULT_CONTEXT_WINDOW_TOKENS, COMPRESS_MIN_RATIO } from './protocol/api'
+export { DEFAULT_CONTEXT_WINDOW_TOKENS, COMPRESS_MIN_RATIO, MESSAGES_DETAIL_CAPABILITY } from './protocol/api'
 export type {
   ParamsOf,
   ResultOf,
@@ -171,6 +171,7 @@ export type {
   SendParams,
   MsgPageParams,
   MsgPageDTO,
+  MessagesDetail,
   AnswerParams,
   AnswerAction,
   AnswerResult,

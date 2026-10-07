@@ -22,7 +22,7 @@
  */
 import { BridgeError } from '../protocol/errors'
 import { answerActionError, normalizeChoiceAnswer } from '../protocol/answer'
-import { COMPRESS_MIN_RATIO, DEFAULT_CONTEXT_WINDOW_TOKENS } from '../protocol/api'
+import { COMPRESS_MIN_RATIO, DEFAULT_CONTEXT_WINDOW_TOKENS, MESSAGES_DETAIL_CAPABILITY } from '../protocol/api'
 import {
   COMPRESS_MODE_CAPABILITY,
   DEFAULT_COMPRESS_MODE,
@@ -714,6 +714,10 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
           // 覆写已有文件（编辑保存）：mock 真的按「目标必须存在 + mtime/size 校验 + 不改名」
           // 实现了，故如实声明 —— 不声明的话手机端只会给只读预览，用例就测不到编辑那条路
           FILE_EDIT_CAPABILITY,
+          // 窗口两阶段加载（`MsgPageParams.detail`）：mock 真的按 `detail:'summary'` 省掉两类
+          // 重字段（工具输出 / 完整入参）并打 `deferred`，故如实声明 ——
+          // 不声明的话手机端不会走两阶段，用例就测不到这条真实链路
+          MESSAGES_DETAIL_CAPABILITY,
         ],
         paired: true,
         deviceName: 'Virlen 电脑（演示）',
@@ -734,19 +738,35 @@ export function createMockHostDataSource(options: MockHostOptions = {}): MockHos
       calls.push(params.fromRowid != null ? 'host.session.messages(older)' : 'host.session.messages')
       const list = messages.get(params.sessionId) ?? []
       const limit = params.limit ?? 50
+      /*
+       * 两阶段加载（`detail:'summary'`）：与真电脑侧**同一口径** —— 省掉两类重字段
+       * （工具执行输出 `text`、完整入参 `toolArgsFull`），并在受影响的条目上打 `deferred`。
+       * mock 若不实现，手机端的「先摘要后补细节」路径就永远测不到（对着假行为发绿灯）。
+       */
+      const summary = params.detail === 'summary'
+      const project = (m: MessageDTO): MessageDTO => {
+        if (!summary) return { ...m }
+        const toolText = m.role === 'tool' && m.text.trim().length > 0
+        const hasArgsFull = m.toolArgsFull != null
+        if (!toolText && !hasArgsFull) return { ...m }
+        const out: MessageDTO = { ...m, deferred: true }
+        if (toolText) out.text = ''
+        if (hasArgsFull) delete out.toolArgsFull
+        return out
+      }
       // 游标 = 已返回窗口中最旧一条的下标（与真实电脑侧的 rowid 同形：不透明、原样回传）
       if (params.fromRowid != null) {
         const end = Math.max(0, Math.min(params.fromRowid, list.length))
         const start = Math.max(0, end - limit)
         return {
-          messages: list.slice(start, end).map((m) => ({ ...m })),
+          messages: list.slice(start, end).map(project),
           hasMore: start > 0,
           cursor: start > 0 ? start : null,
         }
       }
       const start = Math.max(0, list.length - limit)
       return {
-        messages: list.slice(start).map((m) => ({ ...m })),
+        messages: list.slice(start).map(project),
         hasMore: start > 0,
         cursor: start > 0 ? start : null,
       }

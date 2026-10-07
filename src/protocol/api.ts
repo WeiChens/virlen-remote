@@ -116,6 +116,29 @@ export interface MessageDTO {
    */
   toolArgsFull?: string
   /**
+   * 本步是否**失败**（仅 `role:'tool'` 有意义；可选）。
+   *
+   * 语义（电脑侧权威，与桌面工具卡片 `result.isError` 同一判据）：引擎把工具执行结果落成
+   * `role:'tool'` 消息时带的错误标记 —— Rust 侧「成功」与「退出码 >= 2 等工具级失败」都回
+   * Ok，靠这个布尔区分（见 `virlen-app` 的 `tools/execute/common.ts`、`message-repair.ts`）。
+   *
+   * ⚠️ **不能用正文反推**：失败结果常常也是一段正常文本（报错回显），成功输出里也可能包含
+   * 形似错误的字样。这个字段才是权威判据。字段缺席 = 没有失败标记（成功 / 旧电脑端未下发）——
+   * 消费方据此显示 ✓；只有 `true` 才显示 ✗。**不得**把缺席当成「结果未知」而什么都不显示。
+   *
+   * 消费方注意：手机端据此在工具卡片 / 工具组头部打 ✓/✗ 标志（`MessageList`）。
+   */
+  isError?: boolean
+  /**
+   * 本条的**详细内容被延后**（可选）—— 当 `host.session.messages` 以 `detail:'summary'` 请求时，
+   * 电脑侧省掉两类重字段（工具执行输出 `text`、完整入参 `toolArgsFull`）并打上本标记，
+   * 供手机端「先渲染摘要、再后台补细节」的两阶段加载。
+   *
+   * ⚠️ 与 `detail:'omitted'` **语义不同**：那个是「按链路档位不下发，重开会话才能拿回」，
+   * 这个是「马上就会补发」。消费方据此显示「正在加载详细内容…」，而不是「没有输出」或「已省略」。
+   */
+  deferred?: boolean
+  /**
    * 本条消息引用了哪些历史消息（快照，**可选**；只有带引用的用户消息才有）。
    *
    * 为什么结构化下行而不展平进 `text`：桌面端把它渲染成气泡上方的引用条（`QuoteChip`），
@@ -307,8 +330,35 @@ export interface SendParams {
   files?: MessageFileRef[]
 }
 
+/**
+ * 窗口投影详略（`MsgPageParams.detail`，见那里的说明）。
+ */
+export type MessagesDetail = 'full' | 'summary'
+
+/**
+ * 两端都要声明/列出的**能力名**（手机端写进 `hello.capabilities`；电脑端写进 ACL 能力集）。
+ *
+ * - 手机端声明它 = 「我会用 `detail:'summary'` 拉窗口，并渲染 `MessageDTO.deferred`」；
+ * - 电脑端列出它 = 「我会按 `detail` 省字段并打 `deferred` 标记」。
+ *
+ * **为什么要能力名**：`detail` 是普通可选字段，旧电脑端会**静默忽略**它（当 full）—— 手机端若
+ * 不先确认，就会「先拉一次 full（慢）再拉一次 full（更慢）」，白白多一倍流量。声明后两端才谈得上。
+ */
+export const MESSAGES_DETAIL_CAPABILITY = 'session.messages.detail'
+
 export interface MsgPageParams {
   sessionId: string
+  /**
+   * 投影详略（可选）—— 手机端两阶段加载用：
+   * - `'full'`（缺省）：该发什么发什么（现状，一个字节不少发）；
+   * - `'summary'`：省掉两类**重字段**（工具执行输出 `text`、完整入参 `toolArgsFull`），
+   *   只在受影响的条目上打 `MessageDTO.deferred = true`。
+   *
+   * ⚠️ 旧电脑端不认这个字段会**静默忽略**它（当 `'full'`）—— 手机端据此退化为「一次拉全量」
+   * （不会错，只是没省到）。故手机端只在 `hello` 应答里看到 `MESSAGES_DETAIL_CAPABILITY` 时
+   * 才先拉 `summary`、再拉 `full`（见 store 里的两阶段）。
+   */
+  detail?: MessagesDetail
   /**
    * 更早一页的游标（M5）—— 原样回传上一次应答的 `MsgPageDTO.cursor`。
    *

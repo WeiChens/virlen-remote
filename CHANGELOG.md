@@ -5,7 +5,36 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-07
+
 ### Added
+
+- **窗口两阶段加载**：`MsgPageParams.detail?: 'full' | 'summary'` + `MessageDTO.deferred?: boolean`
+  与新能力名 `MESSAGES_DETAIL_CAPABILITY`（`session.messages.detail`）。
+
+  `detail:'summary'` 时电脑侧省掉两类**重字段**（工具执行输出 `text`、完整入参 `toolArgsFull`），
+  只在受影响的条目上打 `deferred: true` —— 手机端据此**先渲染摘要**（用户立刻看到对话），
+  随后后台再拉一次 `full` 按 id 补齐细节。解决「打开会话要等很久、白屏」的体验问题。
+
+  ⚠️ **与 `detail:'omitted'` 语义不同**：那个是「按链路档位不下发」，这个是「马上会补发」。
+  旧电脑端忽略 `detail` 即退化为一次拉全量（不会错，只是没省到），故手机端只在 `hello`
+  应答里看到该能力名时才走两阶段。
+
+- **演示宿主支持两阶段加载**：`createMockHostDataSource().getMessages` 现在按
+  `detail:'summary'` 真的省字段并打 `deferred`，并在 hello 里声明 `session.messages.detail`
+  —— 不声明 / 不实现的话，手机端的两阶段路径就永远测不到。
+
+## [0.7.0] - 2026-10-07
+
+### Added
+
+- **工具调用成败标记**：`MessageDTO.isError?: boolean`（仅 `role:'tool'` 有意义）—— 工具执行
+  结果的失败标记（与桌面工具卡片 `result.isError` 同一判据）。手机端据此在**单条工具卡**
+  的头部显示 ✓/✗（**取代**原来的终端类别图标；工具组头不显示），**不再猜**（失败输出常常
+  也是一段正常文本；成功输出里也可能出现形似错误的字样）。字段缺席 = 没有失败标记
+  （成功 / 旧电脑端未下发），手机端一并按 ✓ 渲染。
+
+  ⚠️ **不能靠正文反推**：`isError` 才是权威判据，手机端只认它。
 
 - **消息里引用电脑上的文件（§37 的延伸）**：`SendParams.files?: MessageFileRef[]` 与
   `MessageDTO.files?: MessageFileRef[]` —— 手机端把文件面板里挑中的文件挂在要发的消息上，
@@ -360,3 +389,6 @@
 [0.4.0]: https://github.com/WeiChens/virlen-remote/releases/tag/v0.4.0
 [0.5.0]: https://github.com/WeiChens/virlen-remote/releases/tag/v0.5.0
 [0.6.0]: https://github.com/WeiChens/virlen-remote/releases/tag/v0.6.0
+[0.6.1]: https://github.com/WeiChens/virlen-remote/releases/tag/v0.6.1
+[0.7.0]: https://github.com/WeiChens/virlen-remote/releases/tag/v0.7.0
+[0.8.0]: https://github.com/WeiChens/virlen-remote/releases/tag/v0.8.0
